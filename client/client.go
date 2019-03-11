@@ -96,7 +96,7 @@ func (c *simpleClient) Call(ctx context.Context, serviceMethod string, args inte
 		} else {
 			metaData = metaDataInterface.(map[string]string)
 		}
-		metaData[protocol.RequestSeqKey] = c.option.RequestTimeout.String()
+		metaData[protocol.RequestTimeoutKey] = c.option.RequestTimeout.String()
 		ctx = context.WithValue(ctx, protocol.MetaDataKey, metaData)
 	}
 

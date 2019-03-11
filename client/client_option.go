@@ -14,9 +14,6 @@ type Option struct {
 	TransportType transport.TransportType
 
 	RequestTimeout time.Duration
-
-	Network string
-	Addr    string
 }
 
 var DefaultOption = Option{
