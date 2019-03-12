@@ -13,6 +13,7 @@ type Option struct {
 	CompressType  protocol.CompressType
 	TransportType transport.TransportType
 
+	DialTimeout    time.Duration
 	RequestTimeout time.Duration
 }
 
