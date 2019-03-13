@@ -3,6 +3,7 @@ package transport
 import (
 	"io"
 	"net"
+	"time"
 )
 
 type transportMaker func() Transport
@@ -26,7 +27,7 @@ var makeServerTransport = map[TransportType]serverTransportMaker{
 }
 
 type Transport interface {
-	Dial(network, addr string) error
+	Dial(network, addr string, option DialOption) error
 	io.ReadWriteCloser
 	RemoteAddr() net.Addr
 	LocalAddr() net.Addr
@@ -40,8 +41,17 @@ func NewTransport(t TransportType) Transport {
 	return makeTransport[t]()
 }
 
-func (s *Socket) Dial(network, addr string) error {
-	conn, err := net.Dial(network, addr)
+type DialOption struct {
+	Timeout time.Duration
+}
+
+func (s *Socket) Dial(network, addr string, option DialOption) error {
+	var dialer net.Dialer
+	if option.Timeout > time.Duration(0) {
+		dialer.Timeout = option.Timeout
+	}
+	conn, err := dialer.Dial(network, addr)
+
 	s.conn = conn
 	return err
 }

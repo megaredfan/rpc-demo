@@ -23,9 +23,9 @@ const (
 )
 
 type Event struct {
-	action     EventAction
-	serviceKey string
-	providers  Provider
+	Action     EventAction
+	ServiceKey string
+	Provider   Provider
 }
 
 type Provider struct {
@@ -55,8 +55,12 @@ func (p *Peer2PeerDiscovery) GetServiceList(serviceKey string) []Provider {
 	return p.providers
 }
 
-func (p *Peer2PeerDiscovery) Watch(serviceKey string) chan []Provider {
+func (p *Peer2PeerDiscovery) Watch(serviceKey string) Watcher {
 	return nil
+}
+
+func (p *Peer2PeerDiscovery) Unwatch(watcher Watcher) {
+	return
 }
 
 func (p *Peer2PeerDiscovery) WithProvider(provider Provider) *Peer2PeerDiscovery {

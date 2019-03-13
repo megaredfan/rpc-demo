@@ -52,7 +52,7 @@ func NewRPCClient(network string, addr string, option Option) (RPCClient, error)
 	client.codec = codec.GetCodec(option.SerializeType)
 
 	tr := transport.NewTransport(option.TransportType)
-	err := tr.Dial(network, addr)
+	err := tr.Dial(network, addr, transport.DialOption{Timeout: option.DialTimeout})
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +60,7 @@ func NewRPCClient(network string, addr string, option Option) (RPCClient, error)
 	client.rwc = tr
 
 	go client.input()
+	log.Printf("connected to %s@%s", network, addr)
 	return client, nil
 }
 

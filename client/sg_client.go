@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/selector"
+	"log"
 	"sync"
 )
 
@@ -26,6 +27,7 @@ type SGOption struct {
 	Registry      registry.Registry
 	Selector      selector.Selector
 	SelectOptions []selector.SelectOption
+	CallWrappers  []CallFuncWrapper
 
 	Option
 
@@ -53,10 +55,11 @@ type Invoker interface {
 }
 
 type sgClient struct {
-	shutdown bool
-	option   SGOption
-	clients  sync.Map //map[string]RPCClient
-	servers  sync.Map //map[string]registry.Provider
+	shutdown  bool
+	option    SGOption
+	clients   sync.Map //map[string]RPCClient
+	serversMu sync.RWMutex
+	servers   []registry.Provider
 }
 
 type CallOption func(op *SGOption)
@@ -96,7 +99,8 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			retries--
 
 			if rpcClient != nil {
-				err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
+				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
+				//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 				if err == nil {
 					return err
 				}
@@ -119,7 +123,8 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			retries--
 
 			if rpcClient != nil {
-				err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
+				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
+				//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 				if err == nil {
 					return err
 				}
@@ -137,7 +142,8 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 
 		return err
 	default: //FailFast
-		err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
+		err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
+		//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 		if err != nil {
 			if _, ok := err.(ServiceError); !ok {
 				c.removeClient(provider.ProviderKey, rpcClient)
@@ -146,6 +152,13 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 
 		return err
 	}
+}
+
+func (c *sgClient) wrapCall(callFunc CallFunc) CallFunc {
+	for _, wrapper := range c.option.CallWrappers {
+		callFunc = wrapper(callFunc)
+	}
+	return callFunc
 }
 
 type CallFunc func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error
@@ -216,21 +229,62 @@ func (c *sgClient) removeClient(clientKey string, client RPCClient) {
 }
 
 func (c *sgClient) providers() []registry.Provider {
-	providers := make([]registry.Provider, 0)
-	c.servers.Range(func(key, value interface{}) bool {
-		if provider, ok := value.(registry.Provider); ok {
-			providers = append(providers, provider)
-		}
-		return true
-	})
-	return providers
+	c.serversMu.RLock()
+	defer c.serversMu.RUnlock()
+	return c.servers
 }
 
 func NewSGClient(option SGOption) SGClient {
 	s := &sgClient{option: option}
 	providers := s.option.Registry.GetServiceList(option.ServiceKey)
+	watcher := s.option.Registry.Watch(option.ServiceKey)
+	log.Printf("watcher: %v", watcher)
+	go func() {
+		for {
+			event, err := watcher.Next()
+			log.Printf("received watch event:%v", event)
+			if err != nil {
+				log.Println(err)
+				break
+			}
+
+			if event.ServiceKey == s.option.ServiceKey {
+				switch event.Action {
+				case registry.Create:
+					s.serversMu.Lock()
+					for _, p := range providers {
+						if p.ProviderKey != event.Provider.ProviderKey {
+							s.servers = append(s.servers, p)
+						}
+					}
+					s.servers = append(s.servers, event.Provider)
+					s.serversMu.Unlock()
+				case registry.Update:
+					s.serversMu.Lock()
+					for _, p := range providers {
+						if p.ProviderKey != event.Provider.ProviderKey {
+							s.servers = append(s.servers, p)
+						}
+					}
+					s.servers = append(s.servers, event.Provider)
+					s.serversMu.Unlock()
+				case registry.Delete:
+					s.serversMu.Lock()
+					for _, p := range providers {
+						if p.ProviderKey != event.Provider.ProviderKey {
+							s.servers = append(s.servers, p)
+						}
+					}
+					s.serversMu.Unlock()
+				}
+			}
+
+		}
+	}()
+	s.serversMu.Lock()
+	defer s.serversMu.Unlock()
 	for _, p := range providers {
-		s.servers.Store(p.ProviderKey, p)
+		s.servers = append(s.servers, p)
 	}
 	return s
 }

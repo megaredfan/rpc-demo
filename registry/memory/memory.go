@@ -8,38 +8,42 @@ import (
 	"time"
 )
 
+var (
+	timeout = time.Millisecond * 10
+)
+
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string][]registry.Provider
-	watchers  map[string]*registry.Watcher
-}
-
-type Watcher interface {
-	Next() (*registry.Event, error)
-	Close()
+	watchers  map[string]*Watcher
 }
 
 func (r *Registry) Init() {
-	panic("implement me")
+	r.providers = make(map[string][]registry.Provider)
 }
 
 func (r *Registry) Register(serviceKey string, provider registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	go sendWatcherEvent(serviceKey, provider)
+	go r.sendWatcherEvent(registry.Create, serviceKey, provider)
 
 	list, ok := r.providers[serviceKey]
 	if ok {
 		list = append(list, provider)
+		r.providers[serviceKey] = list
 	} else {
 		list = []registry.Provider{provider}
 		r.providers[serviceKey] = list
 	}
 }
 
-func (r *Registry) sendWatcherEvent(serviceKey string, provider registry.Provider) {
-	var watchers []*registry.Watcher
-
+func (r *Registry) sendWatcherEvent(action registry.EventAction, serviceKey string, provider registry.Provider) {
+	var watchers []*Watcher
+	event := &registry.Event{
+		Action:     action,
+		ServiceKey: serviceKey,
+		Provider:   provider,
+	}
 	r.mu.RLock()
 	for _, w := range r.watchers {
 		watchers = append(watchers, w)
@@ -49,12 +53,12 @@ func (r *Registry) sendWatcherEvent(serviceKey string, provider registry.Provide
 	for _, w := range watchers {
 		select {
 		case <-w.exit:
-			m.Lock()
-			delete(m.Watchers, w.id)
-			m.Unlock()
+			r.mu.Lock()
+			delete(r.watchers, w.id)
+			r.mu.Unlock()
 		default:
 			select {
-			case w.res <- r:
+			case w.res <- event:
 			case <-time.After(timeout):
 			}
 		}
@@ -64,6 +68,8 @@ func (r *Registry) sendWatcherEvent(serviceKey string, provider registry.Provide
 func (r *Registry) Unregister(serviceKey string, provider registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	go r.sendWatcherEvent(registry.Delete, serviceKey, provider)
+
 	list, ok := r.providers[serviceKey]
 	if ok {
 		var newList []registry.Provider
@@ -85,13 +91,16 @@ func (r *Registry) GetServiceList(serviceKey string) []registry.Provider {
 
 func (r *Registry) Watch(serviceKey string) registry.Watcher {
 	r.mu.Lock()
-	defer r.mu.Lock()
+	defer r.mu.Unlock()
 
+	if r.watchers == nil {
+		r.watchers = make(map[string]*Watcher)
+	}
 	event := make(chan *registry.Event)
 	exit := make(chan bool)
 	id := uuid.New().String()
 
-	w := &memoryWatcher{
+	w := &Watcher{
 		id:         id,
 		serviceKey: serviceKey,
 		res:        event,
@@ -103,43 +112,54 @@ func (r *Registry) Watch(serviceKey string) registry.Watcher {
 }
 
 func (r *Registry) Unwatch(watcher registry.Watcher) {
-	mw := watcher.(*memoryWatcher)
+	target, ok := watcher.(*Watcher)
+	if !ok {
+		return
+	}
+
 	r.mu.Lock()
 	defer r.mu.Lock()
 
 	var newWatcherList []registry.Watcher
 	for _, w := range r.watchers {
-		if target, ok := w.(*memoryWatcher); ok {
-			if target.id != mw.id {
-				newWatcherList = append(newWatcherList, target)
-			}
+		if w.id != target.id {
+			newWatcherList = append(newWatcherList, w)
 		}
 	}
 }
 
-type memoryWatcher struct {
+type Watcher struct {
 	id         string
 	serviceKey string
 	res        chan *registry.Event
 	exit       chan bool
 }
 
-func (mw *memoryWatcher) Next() (*registry.Event, error) {
+func (m *Watcher) Next() (*registry.Event, error) {
 	for {
 		select {
-		case r := <-mw.res:
+		case r := <-m.res:
+			if m.serviceKey != "" && m.serviceKey != r.ServiceKey {
+				continue
+			}
 			return r, nil
-		case <-mw.exit:
+		case <-m.exit:
 			return nil, errors.New("watcher stopped")
 		}
 	}
 }
 
-func (mw *memoryWatcher) Close() {
+func (m *Watcher) Close() {
 	select {
-	case <-mw.exit:
+	case <-m.exit:
 		return
 	default:
-		close(mw.exit)
+		close(m.exit)
 	}
+}
+
+func NewInMemoryRegistry() registry.Registry {
+	r := &Registry{}
+	r.Init()
+	return r
 }

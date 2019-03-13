@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/megaredfan/rpc-demo/protocol"
+	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/transport"
 	"io"
 	"log"
@@ -174,6 +175,14 @@ func isExported(name string) bool {
 }
 
 func (s *simpleServer) Serve(network string, addr string) error {
+	provider := registry.Provider{
+		ProviderKey: network + "@" + addr,
+		Network:     network,
+		Addr:        addr,
+	}
+	s.option.Registry.Register(s.option.ServiceKey, provider)
+	log.Printf("registered provider %v", provider)
+
 	s.tr = transport.NewServerTransport(s.option.TransportType)
 	err := s.tr.Listen(network, addr)
 	if err != nil {
@@ -214,7 +223,7 @@ type Request struct {
 func (s *simpleServer) serveTransport(tr transport.Transport) {
 	for {
 		if rand.Intn(3) == 0 {
-			log.Println("randomly close transport")
+			log.Printf("randomly close transport: %s-> %s", tr.RemoteAddr(), tr.LocalAddr())
 			tr.Close()
 			return
 		}
