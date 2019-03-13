@@ -8,6 +8,7 @@ import (
 	"github.com/megaredfan/rpc-demo/transport"
 	"io"
 	"log"
+	"math/rand"
 	"reflect"
 	"strings"
 	"sync"
@@ -212,6 +213,11 @@ type Request struct {
 
 func (s *simpleServer) serveTransport(tr transport.Transport) {
 	for {
+		if rand.Intn(3) == 0 {
+			log.Println("randomly close transport")
+			tr.Close()
+			return
+		}
 		request, err := protocol.DecodeMessage(s.option.ProtocolType, tr)
 
 		if err != nil {

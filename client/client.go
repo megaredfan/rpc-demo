@@ -20,6 +20,7 @@ type RPCClient interface {
 	Go(ctx context.Context, serviceMethod string, arg interface{}, reply interface{}, done chan *Call) *Call
 	Call(ctx context.Context, serviceMethod string, arg interface{}, reply interface{}) error
 	Close() error
+	IsShutDown() bool
 }
 
 type Call struct {
@@ -38,6 +39,10 @@ type simpleClient struct {
 	shutdown     bool
 	option       Option
 	seq          uint64
+}
+
+func (c *simpleClient) IsShutDown() bool {
+	return c.shutdown
 }
 
 func NewRPCClient(network string, addr string, option Option) (RPCClient, error) {
@@ -187,7 +192,7 @@ func (c *simpleClient) input() {
 		case call == nil:
 			//请求已经被清理掉了，可能是已经超时了
 		case response.Error != "":
-			call.Error = errors.New(response.Error)
+			call.Error = ServiceError(response.Error)
 			call.done()
 		default:
 			err = c.codec.Decode(response.Data, call.Reply)
@@ -197,4 +202,6 @@ func (c *simpleClient) input() {
 			call.done()
 		}
 	}
+	log.Println("input error, closing client, error: " + err.Error())
+	c.Close()
 }

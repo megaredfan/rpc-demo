@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/megaredfan/rpc-demo/client"
+	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/server"
 	"log"
 	"math/rand"
@@ -13,16 +14,15 @@ import (
 )
 
 func main() {
-
-	s := server.NewSimpleServer(server.DefaultOption)
-	err := s.Register(Arith{}, make(map[string]string))
-	if err != nil {
-		panic(err)
-	}
 	go func() {
-		err = s.Serve("tcp", ":8888")
+		s := server.NewSimpleServer(server.DefaultOption)
+		err := s.Register(Arith{}, make(map[string]string))
 		if err != nil {
-			panic(err)
+			log.Println("err!!!" + err.Error())
+		}
+		err = s.Serve("tcp", ":8881")
+		if err != nil {
+			log.Println("err!!!" + err.Error())
 		}
 	}()
 
@@ -30,61 +30,89 @@ func main() {
 
 	wg := new(sync.WaitGroup)
 	wg.Add(100)
+
+	success := 0
+	fail := 0
 	for i := 0; i < 100; i++ {
-		go func() {
-			c, err := client.NewRPCClient("tcp", ":8888", client.DefaultOption)
-			if err != nil {
-				panic(err)
-			}
+		//go func() {
+		//
+		//}()
+		op := &client.DefaultSGOption
+		op.FailMode = client.FailRetry
+		op.Retries = 1
+		op.Registry = registry.NewPeer2PeerRegistry().WithProviders([]registry.Provider{
+			{
+				ProviderKey: "tcp@:8881",
+				Network:     "tcp",
+				Addr:        ":8881",
+			},
+		})
 
-			args := Args{A: rand.Intn(200), B: rand.Intn(100)}
-			reply := &Reply{}
-			err = c.Call(context.TODO(), "Arith.Add", args, reply)
-			if err != nil {
-				panic(err)
-			}
-			if reply.C != args.A+args.B {
-				log.Fatal(reply.C)
-			} else {
-				fmt.Println(reply.C)
-			}
+		c := client.NewSGClient(*op)
 
-			err = c.Call(context.TODO(), "Arith.Minus", args, reply)
-			if err != nil {
-				panic(err)
-			}
-			if reply.C != args.A-args.B {
-				log.Fatal(reply.C)
-			} else {
-				fmt.Println(reply.C)
-			}
+		args := Args{A: rand.Intn(200), B: rand.Intn(100)}
+		log.Printf("=========== call %d Add %+v ============\n", i, args)
+		reply := &Reply{}
+		err := c.Call(context.TODO(), "Arith.Add", args, reply)
+		if err != nil {
+			log.Println("err!!!" + err.Error())
+			fail++
+		} else if reply.C != args.A+args.B {
+			log.Println(reply.C)
+			fail++
+		} else {
+			fmt.Println(reply.C)
+			success++
+		}
 
-			err = c.Call(context.TODO(), "Arith.Mul", args, reply)
-			if err != nil {
-				panic(err)
-			}
-			if reply.C != args.A*args.B {
-				log.Fatal(reply.C)
-			} else {
-				fmt.Println(reply.C)
-			}
+		log.Printf("=========== call %d Minus %+v ============\n", i, args)
+		err = c.Call(context.TODO(), "Arith.Minus", args, reply)
+		if err != nil {
+			log.Println("err!!!" + err.Error())
+			fail++
+		} else if reply.C != args.A-args.B {
+			log.Println(reply.C)
+			fail++
+		} else {
+			fmt.Println(reply.C)
+			success++
+		}
 
-			err = c.Call(context.TODO(), "Arith.Divide", args, reply)
-			if err != nil {
-				log.Println(err)
+		log.Printf("=========== call %d Mul %+v ============\n", i, args)
+		err = c.Call(context.TODO(), "Arith.Mul", args, reply)
+		if err != nil {
+			log.Println("err!!!" + err.Error())
+			fail++
+		} else if reply.C != args.A*args.B {
+			log.Println(reply.C)
+			fail++
+		} else {
+			fmt.Println(reply.C)
+			success++
+		}
 
-			}
-			if err != nil && err.Error() == "divided by 0" {
-				log.Println(err)
-			} else if reply.C != args.A/args.B {
-				log.Fatal(reply.C)
-			} else {
-				fmt.Println(reply.C)
-			}
-			wg.Done()
-		}()
+		log.Printf("=========== call %d Divide %+v ============\n", i, args)
+		err = c.Call(context.TODO(), "Arith.Divide", args, reply)
+		if args.B == 0 && err == nil {
+			log.Println("err!!! didn't return errror!")
+			fail++
+		} else if err != nil {
+			log.Println("err!!!" + err.Error())
+			fail++
+		} else if err != nil && err.Error() == "divided by 0" {
+			log.Println(err.Error())
+			success++
+		} else if reply.C != args.A/args.B {
+			log.Println(reply.C)
+			fail++
+		} else {
+			fmt.Println(reply.C)
+			success++
+		}
+		wg.Done()
 	}
 	wg.Wait()
+	fmt.Printf("success:%d, fail:%d, success rate:%f%%", success, fail, float64(success)/float64(success+fail)*100)
 }
 
 type Arith struct{}
