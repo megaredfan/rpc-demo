@@ -5,14 +5,13 @@ import (
 	"errors"
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/megaredfan/rpc-demo/protocol"
-	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/transport"
 	"io"
 	"log"
-	"math/rand"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -20,17 +19,47 @@ import (
 type RPCServer interface {
 	Register(rcvr interface{}, metaData map[string]string) error
 	Serve(network string, addr string) error
+	Services() []ServiceInfo
 	Close() error
 }
 
-type simpleServer struct {
+type ServiceInfo struct {
+	Name    string   `json:"name"`
+	Methods []string `json:"methods"`
+}
+
+type rpcServer struct {
 	codec      codec.Codec
 	serviceMap sync.Map
 	tr         transport.ServerTransport
 	mutex      sync.Mutex
 	shutdown   bool
 
-	option Option
+	Option Option
+}
+
+func (s *rpcServer) Services() []ServiceInfo {
+	var srvs []ServiceInfo
+	s.serviceMap.Range(func(key, value interface{}) bool {
+		sname, ok := key.(string)
+		if ok {
+			srv, ok := value.(*service)
+			if ok {
+				var methodList []string
+				//srv.methodsMu.RLock()
+				srv.methods.Range(func(key, value interface{}) bool {
+					if m, ok := key.(*methodType); ok {
+						methodList = append(methodList, m.method.Name)
+					}
+					return true
+				})
+				//srv.methodsMu.RUnlock()
+				srvs = append(srvs, ServiceInfo{sname, methodList})
+			}
+		}
+		return true
+	})
+	return srvs
 }
 
 type methodType struct {
@@ -40,20 +69,22 @@ type methodType struct {
 }
 
 type service struct {
-	name    string
-	typ     reflect.Type
-	rcvr    reflect.Value
-	methods map[string]*methodType
+	name string
+	typ  reflect.Type
+	rcvr reflect.Value
+	//methodsMu sync.RWMutex
+	//methods map[string]*methodType
+	methods sync.Map
 }
 
-func NewSimpleServer(option Option) RPCServer {
-	s := new(simpleServer)
-	s.option = option
+func NewRPCServer(option Option) RPCServer {
+	s := new(rpcServer)
+	s.Option = option
 	s.codec = codec.GetCodec(option.SerializeType)
 	return s
 }
 
-func (s *simpleServer) Register(rcvr interface{}, metaData map[string]string) error {
+func (s *rpcServer) Register(rcvr interface{}, metaData map[string]string) error {
 	typ := reflect.TypeOf(rcvr)
 	name := typ.Name()
 	srv := new(service)
@@ -61,22 +92,29 @@ func (s *simpleServer) Register(rcvr interface{}, metaData map[string]string) er
 	srv.rcvr = reflect.ValueOf(rcvr)
 	srv.typ = typ
 	methods := suitableMethods(typ, true)
-	srv.methods = methods
 
-	if len(srv.methods) == 0 {
+	if len(methods) == 0 {
 		var errorStr string
 
 		// 如果对应的类型没有任何符合规则的方法，扫描对应的指针类型
 		// 也是从net.rpc包里抄来的
 		method := suitableMethods(reflect.PtrTo(srv.typ), false)
 		if len(method) != 0 {
-			errorStr = "rpcx.Register: type " + name + " has no exported methods of suitable type (hint: pass a pointer to value of that type)"
+			errorStr = "Register: type " + name + " has no exported methods of suitable type (hint: pass a pointer to value of that type)"
 		} else {
-			errorStr = "rpcx.Register: type " + name + " has no exported methods of suitable type"
+			errorStr = "Register: type " + name + " has no exported methods of suitable type"
 		}
 		log.Println(errorStr)
 		return errors.New(errorStr)
 	}
+
+	for k, v := range methods {
+		srv.methods.Store(k, v)
+	}
+	//srv.methodsMu.Lock()
+	//srv.methods = methods
+	//srv.methodsMu.Unlock()
+
 	if _, duplicate := s.serviceMap.LoadOrStore(name, srv); duplicate {
 		return errors.New("rpc: service already defined: " + name)
 	}
@@ -170,29 +208,21 @@ func isExportedOrBuiltinType(t reflect.Type) bool {
 
 // Is this an exported - upper case - name?
 func isExported(name string) bool {
-	rune, _ := utf8.DecodeRuneInString(name)
-	return unicode.IsUpper(rune)
+	r, _ := utf8.DecodeRuneInString(name)
+	return unicode.IsUpper(r)
 }
 
-func (s *simpleServer) Serve(network string, addr string) error {
-	provider := registry.Provider{
-		ProviderKey: network + "@" + addr,
-		Network:     network,
-		Addr:        addr,
-	}
-	s.option.Registry.Register(s.option.ServiceKey, provider)
-	log.Printf("registered provider %v", provider)
-
-	s.tr = transport.NewServerTransport(s.option.TransportType)
+func (s *rpcServer) Serve(network string, addr string) error {
+	s.tr = transport.NewServerTransport(s.Option.TransportType)
 	err := s.tr.Listen(network, addr)
 	if err != nil {
-		log.Println(err)
+		log.Printf("server listen on %s@%s error:%s", network, addr, err)
 		return err
 	}
 	for {
 		conn, err := s.tr.Accept()
 		if err != nil {
-			log.Println(err)
+			log.Printf("server accept on %s@%s error:%s", network, addr, err)
 			return err
 		}
 		go s.serveTransport(conn)
@@ -200,7 +230,7 @@ func (s *simpleServer) Serve(network string, addr string) error {
 
 }
 
-func (s *simpleServer) Close() error {
+func (s *rpcServer) Close() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.shutdown = true
@@ -220,85 +250,112 @@ type Request struct {
 	Data  []byte
 }
 
-func (s *simpleServer) serveTransport(tr transport.Transport) {
+func (s *rpcServer) serveTransport(tr transport.Transport) {
 	for {
-		if rand.Intn(3) == 0 {
-			log.Printf("randomly close transport: %s-> %s", tr.RemoteAddr(), tr.LocalAddr())
-			tr.Close()
-			return
-		}
-		request, err := protocol.DecodeMessage(s.option.ProtocolType, tr)
+		request, err := protocol.DecodeMessage(s.Option.ProtocolType, tr)
 
 		if err != nil {
 			if err == io.EOF {
-				log.Printf("client has closed this connection: %s", tr.RemoteAddr().String())
+				//log.Printf("client has closed this connection: %s", tr.RemoteAddr().String())
 			} else if strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("rpcx: connection %s is closed", tr.RemoteAddr().String())
+				//log.Printf("connection %s is closed", tr.RemoteAddr().String())
 			} else {
-				log.Printf("rpcx: failed to read request: %v", err)
+				log.Printf("failed to read request: %v", err)
 			}
 			return
 		}
 		response := request.Clone()
 		response.MessageType = protocol.MessageTypeResponse
 
-		sname := request.ServiceName
-		mname := request.MethodName
-		srvInterface, ok := s.serviceMap.Load(sname)
-		if !ok {
-			s.writeErrorResponse(response, tr, "can not find service")
-			return
-		}
-		srv, ok := srvInterface.(*service)
-		if !ok {
-			s.writeErrorResponse(response, tr, "not *service type")
-			return
-
-		}
-
-		mtype, ok := srv.methods[mname]
-		if !ok {
-			s.writeErrorResponse(response, tr, "can not find method")
-			return
-		}
-		argv := newValue(mtype.ArgType)
-		replyv := newValue(mtype.ReplyType)
-
+		deadline, ok := response.Deadline()
 		ctx := context.Background()
-		err = s.codec.Decode(request.Data, argv)
 
-		var returns []reflect.Value
-		if mtype.ArgType.Kind() != reflect.Ptr {
-			returns = mtype.method.Func.Call([]reflect.Value{srv.rcvr,
-				reflect.ValueOf(ctx),
-				reflect.ValueOf(argv).Elem(),
-				reflect.ValueOf(replyv)})
+		if ok {
+			ctx, _ = context.WithDeadline(ctx, deadline)
+		}
+
+		s.handleRequest(ctx, request, response, tr)
+	}
+}
+
+func (s *rpcServer) handleRequest(ctx context.Context, request *protocol.Message, response *protocol.Message, tr transport.Transport) {
+	sname := request.ServiceName
+	mname := request.MethodName
+	srvInterface, ok := s.serviceMap.Load(sname)
+	if !ok {
+		s.writeErrorResponse(response, tr, "can not find service")
+		return
+	}
+	srv, ok := srvInterface.(*service)
+	if !ok {
+		s.writeErrorResponse(response, tr, "not *service type")
+		return
+
+	}
+
+	//srv.methodsMu.RLock()
+	//mtype, ok := srv.methods[mname]
+	//srv.methodsMu.RUnlock()
+
+	mtypInterface, ok := srv.methods.Load(mname)
+	mtype, ok := mtypInterface.(*methodType)
+
+	if !ok {
+		s.writeErrorResponse(response, tr, "can not find method")
+		return
+	}
+	argv := newValue(mtype.ArgType)
+	replyv := newValue(mtype.ReplyType)
+
+	actualCodec := s.codec
+	if request.SerializeType != s.Option.SerializeType {
+		actualCodec = codec.GetCodec(request.SerializeType)
+	}
+	err := actualCodec.Decode(request.Data, argv)
+	if err != nil {
+		s.writeErrorResponse(response, tr, "decode arg error:"+err.Error())
+		return
+	}
+
+	var returns []reflect.Value
+	if mtype.ArgType.Kind() != reflect.Ptr {
+		returns = mtype.method.Func.Call([]reflect.Value{srv.rcvr,
+			reflect.ValueOf(ctx),
+			reflect.ValueOf(argv).Elem(),
+			reflect.ValueOf(replyv)})
+	} else {
+		returns = mtype.method.Func.Call([]reflect.Value{srv.rcvr,
+			reflect.ValueOf(ctx),
+			reflect.ValueOf(argv),
+			reflect.ValueOf(replyv)})
+	}
+	if len(returns) > 0 && returns[0].Interface() != nil {
+		err = returns[0].Interface().(error)
+		s.writeErrorResponse(response, tr, err.Error())
+		return
+	}
+
+	responseData, err := actualCodec.Encode(replyv)
+	if err != nil {
+		s.writeErrorResponse(response, tr, err.Error())
+		return
+	}
+
+	response.StatusCode = protocol.StatusOK
+	response.Data = responseData
+
+	deadline, ok := ctx.Deadline()
+	if ok {
+		if time.Now().Before(deadline) {
+			_, err = tr.Write(protocol.EncodeMessage(s.Option.ProtocolType, response))
+			if err != nil {
+				log.Println("write response error:" + err.Error())
+			}
 		} else {
-			returns = mtype.method.Func.Call([]reflect.Value{srv.rcvr,
-				reflect.ValueOf(ctx),
-				reflect.ValueOf(argv),
-				reflect.ValueOf(replyv)})
+			log.Println("passed deadline, give up write response")
 		}
-		if len(returns) > 0 && returns[0].Interface() != nil {
-			err = returns[0].Interface().(error)
-			s.writeErrorResponse(response, tr, err.Error())
-			return
-		}
-
-		responseData, err := codec.GetCodec(request.SerializeType).Encode(replyv)
-		if err != nil {
-			s.writeErrorResponse(response, tr, err.Error())
-			return
-		}
-
-		response.StatusCode = protocol.StatusOK
-		response.Data = responseData
-
-		_, err = tr.Write(protocol.EncodeMessage(s.option.ProtocolType, response))
-		if err != nil {
-			log.Println(err)
-			return
-		}
+	} else {
+		_, err = tr.Write(protocol.EncodeMessage(s.Option.ProtocolType, response))
 	}
 }
 
@@ -310,10 +367,10 @@ func newValue(t reflect.Type) interface{} {
 	}
 }
 
-func (s *simpleServer) writeErrorResponse(response *protocol.Message, w io.Writer, err string) {
+func (s *rpcServer) writeErrorResponse(response *protocol.Message, w io.Writer, err string) {
 	response.Error = err
-	log.Println(response.Error)
+	//log.Println("writing error response:" + response.Error)
 	response.StatusCode = protocol.StatusError
 	response.Data = response.Data[:0]
-	_, _ = w.Write(protocol.EncodeMessage(s.option.ProtocolType, response))
+	_, _ = w.Write(protocol.EncodeMessage(s.Option.ProtocolType, response))
 }

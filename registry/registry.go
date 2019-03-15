@@ -2,11 +2,15 @@ package registry
 
 type Registry interface {
 	Init()
-	Register(serviceKey string, provider Provider)
-	Unregister(serviceKey string, provider Provider)
-	GetServiceList(serviceKey string) []Provider
-	Watch(serviceKey string) Watcher
+	Register(option RegisterOption, provider ...Provider)
+	Unregister(option RegisterOption, provider ...Provider)
+	GetServiceList() []Provider
+	Watch() Watcher
 	Unwatch(watcher Watcher)
+}
+
+type RegisterOption struct {
+	AppKey string
 }
 
 type Watcher interface {
@@ -23,9 +27,9 @@ const (
 )
 
 type Event struct {
-	Action     EventAction
-	ServiceKey string
-	Provider   Provider
+	Action    EventAction
+	AppKey    string
+	Providers []Provider
 }
 
 type Provider struct {
@@ -43,19 +47,19 @@ func (p *Peer2PeerDiscovery) Init() {
 	p.providers = []Provider{}
 }
 
-func (p *Peer2PeerDiscovery) Register(serviceKey string, provider Provider) {
-	p.providers = []Provider{provider}
+func (p *Peer2PeerDiscovery) Register(option RegisterOption, providers ...Provider) {
+	p.providers = providers
 }
 
-func (p *Peer2PeerDiscovery) Unregister(serviceKey string, provider Provider) {
+func (p *Peer2PeerDiscovery) Unregister(option RegisterOption, provider ...Provider) {
 	p.Init()
 }
 
-func (p *Peer2PeerDiscovery) GetServiceList(serviceKey string) []Provider {
+func (p *Peer2PeerDiscovery) GetServiceList() []Provider {
 	return p.providers
 }
 
-func (p *Peer2PeerDiscovery) Watch(serviceKey string) Watcher {
+func (p *Peer2PeerDiscovery) Watch() Watcher {
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/vmihailenco/msgpack"
 	"io"
+	"time"
 )
 
 //-------------------------------------------------------------------------------------------------
@@ -52,21 +53,22 @@ var protocols = map[ProtocolType]Protocol{
 }
 
 const (
-	RequestSeqKey     = "rpc_request_seq"
-	RequestTimeoutKey = "rpc_request_timeout"
-	MetaDataKey       = "rpc_meta_data"
+	RequestSeqKey      = "rpc_request_seq"
+	RequestTimeoutKey  = "rpc_request_timeout"
+	RequestDeadlineKey = "rpc_request_deadline"
+	MetaDataKey        = "rpc_meta_data"
 )
 
 type Header struct {
-	Seq           uint64              //序号, 用来唯一标识请求或响应
-	MessageType   MessageType         //消息类型，用来标识一个消息是请求还是响应
-	CompressType  CompressType        //压缩类型，用来标识一个消息的压缩方式
-	SerializeType codec.SerializeType //序列化类型，用来标识消息体采用的编码方式
-	StatusCode    StatusCode          //状态类型，用来标识一个请求是正常还是异常
-	ServiceName   string              //服务名
-	MethodName    string              //方法名
-	Error         string              //方法调用发生的异常
-	MetaData      map[string]string   //其他元数据
+	Seq           uint64                 //序号, 用来唯一标识请求或响应
+	MessageType   MessageType            //消息类型，用来标识一个消息是请求还是响应
+	CompressType  CompressType           //压缩类型，用来标识一个消息的压缩方式
+	SerializeType codec.SerializeType    //序列化类型，用来标识消息体采用的编码方式
+	StatusCode    StatusCode             //状态类型，用来标识一个请求是正常还是异常
+	ServiceName   string                 //服务名
+	MethodName    string                 //方法名
+	Error         string                 //方法调用发生的异常
+	MetaData      map[string]interface{} //其他元数据
 }
 
 func NewMessage(t ProtocolType) *Message {
@@ -92,6 +94,26 @@ func (m Message) Clone() *Message {
 	c.Header = &header
 	c.Data = m.Data
 	return c
+}
+
+func (m *Message) Deadline() (time.Time, bool) {
+	if m.MetaData == nil {
+		return time.Now(), false
+	} else {
+		deadline, ok := m.MetaData[RequestDeadlineKey]
+		if ok {
+			switch deadline.(type) {
+			case time.Time:
+				return deadline.(time.Time), ok
+			case *time.Time:
+				return *deadline.(*time.Time), ok
+			default:
+				return time.Now(), false
+			}
+		} else {
+			return time.Now(), false
+		}
+	}
 }
 
 type RPCProtocol struct {

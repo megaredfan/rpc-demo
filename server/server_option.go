@@ -12,9 +12,6 @@ type Option struct {
 	SerializeType codec.SerializeType
 	CompressType  protocol.CompressType
 	TransportType transport.TransportType
-
-	ServiceKey string
-	Registry   registry.Registry
 }
 
 var DefaultOption = Option{
@@ -22,4 +19,32 @@ var DefaultOption = Option{
 	SerializeType: codec.MessagePack,
 	CompressType:  protocol.CompressTypeNone,
 	TransportType: transport.TCPTransport,
+}
+
+type Wrapper interface {
+	WrapAccept()
+	WrapServe()
+	WrapServeConn()
+}
+
+type ShutDownHook func(s *sgServer)
+
+type SGOption struct {
+	AppKey         string
+	Registry       registry.Registry
+	RegisterOption registry.RegisterOption
+	Wrappers       []Wrapper
+	ShutDownHooks  []ShutDownHook
+	Option
+}
+
+var DefaultSGOption = SGOption{
+	Option: DefaultOption,
+}
+
+func NewSGServer(opt SGOption) SGServer {
+	s := new(sgServer)
+	s.SGOption = opt
+	s.rpcServer = NewRPCServer(opt.Option)
+	return s
 }

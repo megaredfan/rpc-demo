@@ -8,49 +8,8 @@ import (
 	"sync"
 )
 
-type FailMode byte
-
-const (
-	FailFast FailMode = iota
-	FailOver
-	FailSafe
-	FailRetry
-	FailBack
-	Broadcast
-	Fork
-)
-
-type SGOption struct {
-	ServiceKey    string
-	FailMode      FailMode
-	Retries       int
-	Registry      registry.Registry
-	Selector      selector.Selector
-	SelectOptions []selector.SelectOption
-	CallWrappers  []CallFuncWrapper
-
-	Option
-
-	Meta map[string]string
-}
-
-var DefaultSGOption = SGOption{
-	ServiceKey: "",
-	FailMode:   FailFast,
-	Retries:    0,
-	Selector:   selector.NewRandomSelector(),
-
-	Option: DefaultOption,
-
-	Meta: make(map[string]string),
-}
-
 type SGClient interface {
 	Go(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) (*Call, error)
-	Call(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error
-}
-
-type Invoker interface {
 	Call(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error
 }
 
@@ -62,8 +21,6 @@ type sgClient struct {
 	servers   []registry.Provider
 }
 
-type CallOption func(op *SGOption)
-
 func (c *sgClient) Go(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) (*Call, error) {
 	if c.shutdown {
 		return nil, ErrorShutdown
@@ -74,7 +31,7 @@ func (c *sgClient) Go(ctx context.Context, ServiceMethod string, arg interface{}
 	if err != nil {
 		return nil, err
 	}
-	return client.Go(ctx, ServiceMethod, arg, reply, done), nil
+	return c.wrapGo(client.Go)(ctx, ServiceMethod, arg, reply, done), nil
 
 }
 
@@ -155,15 +112,18 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 }
 
 func (c *sgClient) wrapCall(callFunc CallFunc) CallFunc {
-	for _, wrapper := range c.option.CallWrappers {
-		callFunc = wrapper(callFunc)
+	for _, wrapper := range c.option.Wrappers {
+		callFunc = wrapper.WrapCall(callFunc)
 	}
 	return callFunc
 }
 
-type CallFunc func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error
-
-type CallFuncWrapper func(callFunc CallFunc) CallFunc
+func (c *sgClient) wrapGo(goFunc GoFunc) GoFunc {
+	for _, wrapper := range c.option.Wrappers {
+		goFunc = wrapper.WrapGo(goFunc)
+	}
+	return goFunc
+}
 
 func (c *sgClient) selectClient(ctx context.Context, ServiceMethod string, arg interface{}, opts ...selector.SelectOption) (provider registry.Provider, client RPCClient, err error) {
 
@@ -235,56 +195,74 @@ func (c *sgClient) providers() []registry.Provider {
 }
 
 func NewSGClient(option SGOption) SGClient {
-	s := &sgClient{option: option}
-	providers := s.option.Registry.GetServiceList(option.ServiceKey)
-	watcher := s.option.Registry.Watch(option.ServiceKey)
-	log.Printf("watcher: %v", watcher)
-	go func() {
-		for {
-			event, err := watcher.Next()
-			log.Printf("received watch event:%v", event)
-			if err != nil {
-				log.Println(err)
-				break
-			}
+	s := new(sgClient)
+	s.option = option
+	AddWrapper(&s.option, NewMetaDataWrapper(s))
 
-			if event.ServiceKey == s.option.ServiceKey {
-				switch event.Action {
-				case registry.Create:
-					s.serversMu.Lock()
-					for _, p := range providers {
-						if p.ProviderKey != event.Provider.ProviderKey {
-							s.servers = append(s.servers, p)
-						}
-					}
-					s.servers = append(s.servers, event.Provider)
-					s.serversMu.Unlock()
-				case registry.Update:
-					s.serversMu.Lock()
-					for _, p := range providers {
-						if p.ProviderKey != event.Provider.ProviderKey {
-							s.servers = append(s.servers, p)
-						}
-					}
-					s.servers = append(s.servers, event.Provider)
-					s.serversMu.Unlock()
-				case registry.Delete:
-					s.serversMu.Lock()
-					for _, p := range providers {
-						if p.ProviderKey != event.Provider.ProviderKey {
-							s.servers = append(s.servers, p)
-						}
-					}
-					s.serversMu.Unlock()
-				}
-			}
-
-		}
-	}()
+	providers := s.option.Registry.GetServiceList()
+	watcher := s.option.Registry.Watch()
+	go s.watchService(watcher)
 	s.serversMu.Lock()
 	defer s.serversMu.Unlock()
 	for _, p := range providers {
 		s.servers = append(s.servers, p)
 	}
 	return s
+}
+
+func (c *sgClient) watchService(watcher registry.Watcher) {
+	if watcher == nil {
+		return
+	}
+	for {
+		event, err := watcher.Next()
+		//log.Printf("received watch event:%v", event)
+		if err != nil {
+			log.Println("watch service error:" + err.Error())
+			break
+		}
+
+		if event.AppKey == c.option.AppKey {
+			switch event.Action {
+			case registry.Create:
+				c.serversMu.Lock()
+				for _, ep := range event.Providers {
+					exists := false
+					for _, p := range c.servers {
+						if p.ProviderKey == ep.ProviderKey {
+							exists = true
+						}
+					}
+					if !exists {
+						c.servers = append(c.servers, ep)
+					}
+				}
+
+				c.serversMu.Unlock()
+			case registry.Update:
+				c.serversMu.Lock()
+				for _, ep := range event.Providers {
+					for i := range c.servers {
+						if c.servers[i].ProviderKey == ep.ProviderKey {
+							c.servers[i] = ep
+						}
+					}
+				}
+				c.serversMu.Unlock()
+			case registry.Delete:
+				c.serversMu.Lock()
+				var newList []registry.Provider
+				for _, p := range c.servers {
+					for _, ep := range event.Providers {
+						if p.ProviderKey != ep.ProviderKey {
+							newList = append(newList, p)
+						}
+					}
+				}
+				c.servers = newList
+				c.serversMu.Unlock()
+			}
+		}
+
+	}
 }

@@ -14,82 +14,64 @@ var (
 
 type Registry struct {
 	mu        sync.RWMutex
-	providers map[string][]registry.Provider
+	providers []registry.Provider
 	watchers  map[string]*Watcher
 }
 
 func (r *Registry) Init() {
-	r.providers = make(map[string][]registry.Provider)
+	r.providers = []registry.Provider{}
 }
 
-func (r *Registry) Register(serviceKey string, provider registry.Provider) {
+func (r *Registry) Register(option registry.RegisterOption, providers ...registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	go r.sendWatcherEvent(registry.Create, serviceKey, provider)
+	go r.sendWatcherEvent(registry.Create, option.AppKey, providers...)
 
-	list, ok := r.providers[serviceKey]
-	if ok {
-		list = append(list, provider)
-		r.providers[serviceKey] = list
-	} else {
-		list = []registry.Provider{provider}
-		r.providers[serviceKey] = list
-	}
-}
-
-func (r *Registry) sendWatcherEvent(action registry.EventAction, serviceKey string, provider registry.Provider) {
-	var watchers []*Watcher
-	event := &registry.Event{
-		Action:     action,
-		ServiceKey: serviceKey,
-		Provider:   provider,
-	}
-	r.mu.RLock()
-	for _, w := range r.watchers {
-		watchers = append(watchers, w)
-	}
-	r.mu.RUnlock()
-
-	for _, w := range watchers {
-		select {
-		case <-w.exit:
-			r.mu.Lock()
-			delete(r.watchers, w.id)
-			r.mu.Unlock()
-		default:
-			select {
-			case w.res <- event:
-			case <-time.After(timeout):
+	var providers2Register []registry.Provider
+	for _, p := range providers {
+		exist := false
+		for _, cp := range r.providers {
+			if cp.ProviderKey == p.ProviderKey {
+				exist = true
+				break
 			}
 		}
+		if !exist {
+			providers2Register = append(providers2Register, p)
+		}
 	}
+
+	r.providers = append(r.providers, providers2Register...)
 }
 
-func (r *Registry) Unregister(serviceKey string, provider registry.Provider) {
+func (r *Registry) Unregister(option registry.RegisterOption, providers ...registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	go r.sendWatcherEvent(registry.Delete, serviceKey, provider)
+	go r.sendWatcherEvent(registry.Delete, option.AppKey, providers...)
 
-	list, ok := r.providers[serviceKey]
-	if ok {
-		var newList []registry.Provider
-		for _, p := range list {
-			if p.ProviderKey != provider.ProviderKey {
-				newList = append(newList, p)
+	var newList []registry.Provider
+	for _, p := range r.providers {
+		remain := true
+		for _, up := range providers {
+			if p.ProviderKey != up.ProviderKey {
+				remain = false
 			}
 		}
-		r.providers[serviceKey] = newList
+		if remain {
+			newList = append(newList, p)
+		}
 	}
+	r.providers = newList
 }
 
-func (r *Registry) GetServiceList(serviceKey string) []registry.Provider {
+func (r *Registry) GetServiceList() []registry.Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return r.providers[serviceKey]
+	return r.providers
 }
 
-func (r *Registry) Watch(serviceKey string) registry.Watcher {
+func (r *Registry) Watch() registry.Watcher {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -101,10 +83,9 @@ func (r *Registry) Watch(serviceKey string) registry.Watcher {
 	id := uuid.New().String()
 
 	w := &Watcher{
-		id:         id,
-		serviceKey: serviceKey,
-		res:        event,
-		exit:       exit,
+		id:   id,
+		res:  event,
+		exit: exit,
 	}
 
 	r.watchers[id] = w
@@ -128,18 +109,46 @@ func (r *Registry) Unwatch(watcher registry.Watcher) {
 	}
 }
 
+func (r *Registry) sendWatcherEvent(action registry.EventAction, AppKey string, providers ...registry.Provider) {
+	var watchers []*Watcher
+	event := &registry.Event{
+		Action:    action,
+		AppKey:    AppKey,
+		Providers: providers,
+	}
+	r.mu.RLock()
+	for _, w := range r.watchers {
+		watchers = append(watchers, w)
+	}
+	r.mu.RUnlock()
+
+	for _, w := range watchers {
+		select {
+		case <-w.exit:
+			r.mu.Lock()
+			delete(r.watchers, w.id)
+			r.mu.Unlock()
+		default:
+			select {
+			case w.res <- event:
+			case <-time.After(timeout):
+			}
+		}
+	}
+}
+
 type Watcher struct {
-	id         string
-	serviceKey string
-	res        chan *registry.Event
-	exit       chan bool
+	id     string
+	AppKey string
+	res    chan *registry.Event
+	exit   chan bool
 }
 
 func (m *Watcher) Next() (*registry.Event, error) {
 	for {
 		select {
 		case r := <-m.res:
-			if m.serviceKey != "" && m.serviceKey != r.ServiceKey {
+			if m.AppKey != "" && m.AppKey != r.AppKey {
 				continue
 			}
 			return r, nil
