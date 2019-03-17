@@ -57,7 +57,6 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 
 			if rpcClient != nil {
 				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
-				//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 				if err == nil {
 					return err
 				}
@@ -84,7 +83,6 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 
 			if rpcClient != nil {
 				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
-				//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 				if err == nil {
 					return err
 				}
@@ -139,27 +137,8 @@ func (c *sgClient) selectClient(ctx context.Context, ServiceMethod string, arg i
 	if err != nil {
 		return
 	}
-	clientKey := provider.ProviderKey
 
-	rc, ok := c.clients.Load(clientKey)
-	if ok {
-		client := rc.(RPCClient)
-		if client.IsShutDown() {
-			c.clients.Delete(clientKey)
-		}
-	}
-
-	rc, ok = c.clients.Load(clientKey)
-	if ok {
-		client = rc.(RPCClient)
-	} else {
-		client, err = NewRPCClient(provider.Network, provider.Addr, c.option.Option)
-		if err != nil {
-			return
-		}
-		c.clients.Store(clientKey, client)
-	}
-
+	client, err = c.getClient(provider)
 	return
 }
 
@@ -224,7 +203,6 @@ func (c *sgClient) watchService(watcher registry.Watcher) {
 	}
 	for {
 		event, err := watcher.Next()
-		//log.Printf("received watch event:%v", event)
 		if err != nil {
 			log.Println("watch service error:" + err.Error())
 			break

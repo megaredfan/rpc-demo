@@ -47,14 +47,12 @@ func (s *SGServer) Services() []ServiceInfo {
 			srv, ok := value.(*service)
 			if ok {
 				var methodList []string
-				//srv.methodsMu.RLock()
 				srv.methods.Range(func(key, value interface{}) bool {
 					if m, ok := value.(*methodType); ok {
 						methodList = append(methodList, m.method.Name)
 					}
 					return true
 				})
-				//srv.methodsMu.RUnlock()
 				srvs = append(srvs, ServiceInfo{sname, methodList})
 			}
 		}
@@ -70,11 +68,9 @@ type methodType struct {
 }
 
 type service struct {
-	name string
-	typ  reflect.Type
-	rcvr reflect.Value
-	//methodsMu sync.RWMutex
-	//methods map[string]*methodType
+	name    string
+	typ     reflect.Type
+	rcvr    reflect.Value
 	methods sync.Map
 }
 
@@ -116,9 +112,6 @@ func (s *SGServer) Register(rcvr interface{}, metaData map[string]string) error 
 	for k, v := range methods {
 		srv.methods.Store(k, v)
 	}
-	//srv.methodsMu.Lock()
-	//srv.methods = methods
-	//srv.methodsMu.Unlock()
 
 	if _, duplicate := s.serviceMap.LoadOrStore(name, srv); duplicate {
 		return errors.New("rpc: service already defined: " + name)
@@ -311,9 +304,9 @@ func (s *SGServer) serveTransport(tr transport.Transport) {
 
 		if err != nil {
 			if err == io.EOF {
-				//log.Printf("client has closed this connection: %s", tr.RemoteAddr().String())
+				log.Printf("client has closed this connection: %s", tr.RemoteAddr().String())
 			} else if strings.Contains(err.Error(), "use of closed network connection") {
-				//log.Printf("connection %s is closed", tr.RemoteAddr().String())
+				log.Printf("connection %s is closed", tr.RemoteAddr().String())
 			} else {
 				log.Printf("failed to read request: %v", err)
 			}
@@ -355,10 +348,6 @@ func (s *SGServer) doHandleRequest(ctx context.Context, request *protocol.Messag
 		return
 
 	}
-
-	//srv.methodsMu.RLock()
-	//mtype, ok := srv.methods[mname]
-	//srv.methodsMu.RUnlock()
 
 	mtypInterface, ok := srv.methods.Load(mname)
 	mtype, ok := mtypInterface.(*methodType)
@@ -432,7 +421,6 @@ func newValue(t reflect.Type) interface{} {
 
 func (s *SGServer) writeErrorResponse(response *protocol.Message, w io.Writer, err string) {
 	response.Error = err
-	//log.Println("writing error response:" + response.Error)
 	response.StatusCode = protocol.StatusError
 	response.Data = response.Data[:0]
 	_, _ = w.Write(protocol.EncodeMessage(s.Option.ProtocolType, response))
