@@ -16,9 +16,10 @@ import (
 
 const callTimes = 1
 
+var s server.RPCServer
+
 func main() {
 	StartServer()
-	//fmt.Scanln(new(string))
 	time.Sleep(1e9)
 	start := time.Now()
 	for i := 0; i < callTimes; i++ {
@@ -27,26 +28,27 @@ func main() {
 	}
 	cost := time.Now().Sub(start)
 	log.Printf("cost:%s", cost)
+	StopServer()
+}
 
+func StopServer() {
+	s.Close()
 }
 
 var Registry = memory.NewInMemoryRegistry()
 
 func StartServer() {
 	go func() {
-		serverOpt := server.DefaultSGOption
+		serverOpt := server.DefaultOption
 		serverOpt.RegisterOption.AppKey = "my-app"
 		serverOpt.Registry = Registry
-		s := server.NewSGServer(serverOpt)
+		s = server.NewRPCServer(serverOpt)
 		err := s.Register(service.Arith{}, make(map[string]string))
 		if err != nil {
 			log.Println("err!!!" + err.Error())
 		}
 		port := 8880
-		err = s.Serve("tcp", ":"+strconv.Itoa(port))
-		if err != nil {
-			log.Println("err!!!" + err.Error())
-		}
+		s.Serve("tcp", ":"+strconv.Itoa(port))
 	}()
 }
 
@@ -54,8 +56,10 @@ func MakeCall(t codec.SerializeType) {
 	op := &client.DefaultSGOption
 	op.AppKey = "my-app"
 	op.SerializeType = t
-	op.RequestTimeout = time.Millisecond * 500
+	op.RequestTimeout = time.Millisecond * 100
 	op.DialTimeout = time.Millisecond * 100
+	op.FailMode = client.FailRetry
+	op.Retries = 3
 
 	r := registry.NewPeer2PeerRegistry()
 	r.Register(registry.RegisterOption{}, registry.Provider{ProviderKey: "tcp@:8880", Network: "tcp", Addr: ":8880"})
@@ -71,8 +75,6 @@ func MakeCall(t codec.SerializeType) {
 		log.Println("err!!!" + err.Error())
 	} else if reply.C != args.A+args.B {
 		log.Printf("%d + %d != %d", args.A, args.B, reply.C)
-	} else {
-		//fmt.Println(reply.C)
 	}
 
 	args = service.Args{A: rand.Intn(200), B: rand.Intn(100)}
@@ -83,8 +85,6 @@ func MakeCall(t codec.SerializeType) {
 		log.Println("err!!!" + err.Error())
 	} else if reply.C != args.A-args.B {
 		log.Printf("%d - %d != %d", args.A, args.B, reply.C)
-	} else {
-		//fmt.Println(reply.C)
 	}
 
 	args = service.Args{A: rand.Intn(200), B: rand.Intn(100)}
@@ -95,8 +95,6 @@ func MakeCall(t codec.SerializeType) {
 		log.Println("err!!!" + err.Error())
 	} else if reply.C != args.A*args.B {
 		log.Printf("%d * %d != %d", args.A, args.B, reply.C)
-	} else {
-		//fmt.Println(reply.C)
 	}
 
 	args = service.Args{A: rand.Intn(200), B: rand.Intn(100)}
@@ -111,7 +109,5 @@ func MakeCall(t codec.SerializeType) {
 		log.Println("err!!!" + err.Error())
 	} else if reply.C != args.A/args.B {
 		log.Printf("%d / %d != %d", args.A, args.B, reply.C)
-	} else {
-		//fmt.Println(reply.C)
 	}
 }

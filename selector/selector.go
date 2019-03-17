@@ -17,11 +17,11 @@ var ErrEmptyProviderList = errors.New("provider list is empty")
 type Filter func(provider registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}) bool
 
 type SelectOption struct {
-	Filter Filter
+	Filters []Filter
 }
 
 type Selector interface {
-	Next(providers []registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}, opts ...SelectOption) (registry.Provider, error)
+	Next(providers []registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}, opt SelectOption) (registry.Provider, error)
 }
 
 type RandomSelector struct {
@@ -29,8 +29,8 @@ type RandomSelector struct {
 
 var RandomSelectorInstance = RandomSelector{}
 
-func (RandomSelector) Next(providers []registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}, opts ...SelectOption) (p registry.Provider, err error) {
-	filters := combineFilter(opts)
+func (RandomSelector) Next(providers []registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}, opt SelectOption) (p registry.Provider, err error) {
+	filters := combineFilter(opt.Filters)
 	list := make([]registry.Provider, 0)
 	for _, p := range providers {
 		if filters(p, ctx, ServiceMethod, arg) {
@@ -47,10 +47,10 @@ func (RandomSelector) Next(providers []registry.Provider, ctx context.Context, S
 	return
 }
 
-func combineFilter(options []SelectOption) Filter {
+func combineFilter(filters []Filter) Filter {
 	return func(provider registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}) bool {
-		for _, op := range options {
-			if !op.Filter(provider, ctx, ServiceMethod, arg) {
+		for _, f := range filters {
+			if !f(provider, ctx, ServiceMethod, arg) {
 				return false
 			}
 		}

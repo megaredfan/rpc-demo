@@ -1,7 +1,6 @@
 package registry
 
 type Registry interface {
-	Init()
 	Register(option RegisterOption, provider ...Provider)
 	Unregister(option RegisterOption, provider ...Provider)
 	GetServiceList() []Provider
@@ -43,16 +42,12 @@ type Peer2PeerDiscovery struct {
 	providers []Provider
 }
 
-func (p *Peer2PeerDiscovery) Init() {
-	p.providers = []Provider{}
-}
-
 func (p *Peer2PeerDiscovery) Register(option RegisterOption, providers ...Provider) {
 	p.providers = providers
 }
 
 func (p *Peer2PeerDiscovery) Unregister(option RegisterOption, provider ...Provider) {
-	p.Init()
+	p.providers = []Provider{}
 }
 
 func (p *Peer2PeerDiscovery) GetServiceList() []Provider {

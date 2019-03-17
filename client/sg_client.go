@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"github.com/megaredfan/rpc-demo/registry"
-	"github.com/megaredfan/rpc-demo/selector"
 	"log"
 	"sync"
 )
@@ -43,12 +42,13 @@ func (e ServiceError) Error() string {
 }
 
 func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error {
-	provider, rpcClient, err := c.selectClient(ctx, ServiceMethod, arg, c.option.SelectOptions...)
+	provider, rpcClient, err := c.selectClient(ctx, ServiceMethod, arg)
 
 	if err != nil && c.option.FailMode == FailFast {
 		return err
 	}
 
+	var connectErr error
 	switch c.option.FailMode {
 	case FailRetry:
 		retries := c.option.Retries
@@ -70,9 +70,12 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			}
 
 			c.removeClient(provider.ProviderKey, rpcClient)
-			rpcClient, err = c.getClient(provider)
+			rpcClient, connectErr = c.getClient(provider)
 		}
 
+		if err == nil {
+			err = connectErr
+		}
 		return err
 	case FailOver:
 		retries := c.option.Retries
@@ -94,40 +97,45 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			}
 
 			c.removeClient(provider.ProviderKey, rpcClient)
-			provider, rpcClient, err = c.selectClient(ctx, ServiceMethod, arg)
+			provider, rpcClient, connectErr = c.selectClient(ctx, ServiceMethod, arg)
 		}
-
+		if err == nil {
+			err = connectErr
+		}
 		return err
-	default: //FailFast
+
+	default: //FailFast or FailSafe
 		err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
-		//err = rpcClient.Call(ctx, ServiceMethod, arg, reply)
 		if err != nil {
 			if _, ok := err.(ServiceError); !ok {
 				c.removeClient(provider.ProviderKey, rpcClient)
 			}
 		}
 
+		if c.option.FailMode == FailSafe {
+			err = nil
+		}
 		return err
 	}
 }
 
 func (c *sgClient) wrapCall(callFunc CallFunc) CallFunc {
 	for _, wrapper := range c.option.Wrappers {
-		callFunc = wrapper.WrapCall(callFunc)
+		callFunc = wrapper.WrapCall(&c.option, callFunc)
 	}
 	return callFunc
 }
 
 func (c *sgClient) wrapGo(goFunc GoFunc) GoFunc {
 	for _, wrapper := range c.option.Wrappers {
-		goFunc = wrapper.WrapGo(goFunc)
+		goFunc = wrapper.WrapGo(&c.option, goFunc)
 	}
 	return goFunc
 }
 
-func (c *sgClient) selectClient(ctx context.Context, ServiceMethod string, arg interface{}, opts ...selector.SelectOption) (provider registry.Provider, client RPCClient, err error) {
+func (c *sgClient) selectClient(ctx context.Context, ServiceMethod string, arg interface{}) (provider registry.Provider, client RPCClient, err error) {
 
-	provider, err = c.option.Selector.Next(c.providers(), ctx, ServiceMethod, arg, opts...)
+	provider, err = c.option.Selector.Next(c.providers(), ctx, ServiceMethod, arg, c.option.SelectOption)
 	if err != nil {
 		return
 	}
@@ -197,7 +205,7 @@ func (c *sgClient) providers() []registry.Provider {
 func NewSGClient(option SGOption) SGClient {
 	s := new(sgClient)
 	s.option = option
-	AddWrapper(&s.option, NewMetaDataWrapper(s))
+	AddWrapper(&s.option, NewMetaDataWrapper(), NewLogWrapper())
 
 	providers := s.option.Registry.GetServiceList()
 	watcher := s.option.Registry.Watch()

@@ -28,17 +28,18 @@ type ServiceInfo struct {
 	Methods []string `json:"methods"`
 }
 
-type rpcServer struct {
-	codec      codec.Codec
-	serviceMap sync.Map
-	tr         transport.ServerTransport
-	mutex      sync.Mutex
-	shutdown   bool
+type SGServer struct {
+	codec            codec.Codec
+	serviceMap       sync.Map
+	tr               transport.ServerTransport
+	mutex            sync.Mutex
+	shutdown         bool
+	requestInProcess int64 //当前正在处理中的请求
 
 	Option Option
 }
 
-func (s *rpcServer) Services() []ServiceInfo {
+func (s *SGServer) Services() []ServiceInfo {
 	var srvs []ServiceInfo
 	s.serviceMap.Range(func(key, value interface{}) bool {
 		sname, ok := key.(string)
@@ -48,7 +49,7 @@ func (s *rpcServer) Services() []ServiceInfo {
 				var methodList []string
 				//srv.methodsMu.RLock()
 				srv.methods.Range(func(key, value interface{}) bool {
-					if m, ok := key.(*methodType); ok {
+					if m, ok := value.(*methodType); ok {
 						methodList = append(methodList, m.method.Name)
 					}
 					return true
@@ -78,13 +79,17 @@ type service struct {
 }
 
 func NewRPCServer(option Option) RPCServer {
-	s := new(rpcServer)
+	s := new(SGServer)
 	s.Option = option
+	s.Option.Wrappers = append(s.Option.Wrappers, &DefaultServerWrapper{})
+	s.AddShutdownHook(func(s *SGServer) {
+		s.Close()
+	})
 	s.codec = codec.GetCodec(option.SerializeType)
 	return s
 }
 
-func (s *rpcServer) Register(rcvr interface{}, metaData map[string]string) error {
+func (s *SGServer) Register(rcvr interface{}, metaData map[string]string) error {
 	typ := reflect.TypeOf(rcvr)
 	name := typ.Name()
 	srv := new(service)
@@ -212,7 +217,22 @@ func isExported(name string) bool {
 	return unicode.IsUpper(r)
 }
 
-func (s *rpcServer) Serve(network string, addr string) error {
+func (s *SGServer) Serve(network string, addr string) error {
+	serveFunc := s.serve
+	return s.wrapServe(serveFunc)(network, addr)
+}
+
+func (s *SGServer) wrapServe(serveFunc ServeFunc) ServeFunc {
+	for _, w := range s.Option.Wrappers {
+		serveFunc = w.WrapServe(s, serveFunc)
+	}
+	return serveFunc
+}
+
+func (s *SGServer) serve(network string, addr string) error {
+	if s.shutdown {
+		return nil
+	}
 	s.tr = transport.NewServerTransport(s.Option.TransportType)
 	err := s.tr.Listen(network, addr)
 	if err != nil {
@@ -220,8 +240,14 @@ func (s *rpcServer) Serve(network string, addr string) error {
 		return err
 	}
 	for {
+		if s.shutdown {
+			continue
+		}
 		conn, err := s.tr.Accept()
 		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") && s.shutdown {
+				return nil
+			}
 			log.Printf("server accept on %s@%s error:%s", network, addr, err)
 			return err
 		}
@@ -230,18 +256,31 @@ func (s *rpcServer) Serve(network string, addr string) error {
 
 }
 
-func (s *rpcServer) Close() error {
+func (s *SGServer) Close() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.shutdown = true
 
-	err := s.tr.Close()
+	//等待当前请求处理完或者直到指定的时间
+	ticker := time.NewTicker(s.Option.ShutDownWait)
+	defer ticker.Stop()
+	for {
+		if s.requestInProcess <= 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+			break
+		}
+	}
 
-	s.serviceMap.Range(func(key, value interface{}) bool {
-		s.serviceMap.Delete(key)
-		return true
-	})
-	return err
+	return s.tr.Close()
+}
+
+func (s *SGServer) AddShutdownHook(hook ShutDownHook) {
+	s.mutex.Lock()
+	s.Option.ShutDownHooks = append(s.Option.ShutDownHooks, hook)
+	s.mutex.Unlock()
 }
 
 type Request struct {
@@ -250,8 +289,24 @@ type Request struct {
 	Data  []byte
 }
 
-func (s *rpcServer) serveTransport(tr transport.Transport) {
+func (s *SGServer) ServeTransport(tr transport.Transport) {
+	serveFunc := s.serveTransport
+	s.wrapServeTransport(serveFunc)(tr)
+}
+
+func (s *SGServer) wrapServeTransport(transportFunc ServeTransportFunc) ServeTransportFunc {
+	for _, w := range s.Option.Wrappers {
+		transportFunc = w.WrapServeTransport(s, transportFunc)
+	}
+	return transportFunc
+}
+
+func (s *SGServer) serveTransport(tr transport.Transport) {
 	for {
+		if s.shutdown {
+			tr.Close()
+			continue
+		}
 		request, err := protocol.DecodeMessage(s.Option.ProtocolType, tr)
 
 		if err != nil {
@@ -274,11 +329,19 @@ func (s *rpcServer) serveTransport(tr transport.Transport) {
 			ctx, _ = context.WithDeadline(ctx, deadline)
 		}
 
-		s.handleRequest(ctx, request, response, tr)
+		handleFunc := s.doHandleRequest
+		s.wrapHandleRequest(handleFunc)(ctx, request, response, tr)
 	}
 }
 
-func (s *rpcServer) handleRequest(ctx context.Context, request *protocol.Message, response *protocol.Message, tr transport.Transport) {
+func (s *SGServer) wrapHandleRequest(handleFunc HandleRequestFunc) HandleRequestFunc {
+	for _, w := range s.Option.Wrappers {
+		handleFunc = w.WrapHandleRequest(s, handleFunc)
+	}
+	return handleFunc
+}
+
+func (s *SGServer) doHandleRequest(ctx context.Context, request *protocol.Message, response *protocol.Message, tr transport.Transport) {
 	sname := request.ServiceName
 	mname := request.MethodName
 	srvInterface, ok := s.serviceMap.Load(sname)
@@ -367,7 +430,7 @@ func newValue(t reflect.Type) interface{} {
 	}
 }
 
-func (s *rpcServer) writeErrorResponse(response *protocol.Message, w io.Writer, err string) {
+func (s *SGServer) writeErrorResponse(response *protocol.Message, w io.Writer, err string) {
 	response.Error = err
 	//log.Println("writing error response:" + response.Error)
 	response.StatusCode = protocol.StatusError

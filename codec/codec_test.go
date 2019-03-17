@@ -17,7 +17,7 @@ type Header struct {
 	MetaData      map[string]interface{} //其他元数据
 }
 
-func BenchmarkMessagePackCodec(b *testing.B) {
+func BenchmarkGobCodec(b *testing.B) {
 	h := Header{
 		Seq:           1,
 		MessageType:   0,
@@ -39,7 +39,7 @@ func BenchmarkMessagePackCodec(b *testing.B) {
 	}
 }
 
-func BenchmarkGetCodec(b *testing.B) {
+func BenchmarkMsgpCodec(b *testing.B) {
 	h := Header{
 		Seq:           1,
 		MessageType:   0,

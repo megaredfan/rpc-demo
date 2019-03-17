@@ -18,10 +18,6 @@ type Registry struct {
 	watchers  map[string]*Watcher
 }
 
-func (r *Registry) Init() {
-	r.providers = []registry.Provider{}
-}
-
 func (r *Registry) Register(option registry.RegisterOption, providers ...registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -138,19 +134,15 @@ func (r *Registry) sendWatcherEvent(action registry.EventAction, AppKey string, 
 }
 
 type Watcher struct {
-	id     string
-	AppKey string
-	res    chan *registry.Event
-	exit   chan bool
+	id   string
+	res  chan *registry.Event
+	exit chan bool
 }
 
 func (m *Watcher) Next() (*registry.Event, error) {
 	for {
 		select {
 		case r := <-m.res:
-			if m.AppKey != "" && m.AppKey != r.AppKey {
-				continue
-			}
 			return r, nil
 		case <-m.exit:
 			return nil, errors.New("watcher stopped")
@@ -169,6 +161,5 @@ func (m *Watcher) Close() {
 
 func NewInMemoryRegistry() registry.Registry {
 	r := &Registry{}
-	r.Init()
 	return r
 }

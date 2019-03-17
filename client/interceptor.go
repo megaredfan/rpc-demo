@@ -8,23 +8,22 @@ import (
 )
 
 type MetaDataWrapper struct {
-	Option *SGOption
 }
 
-func NewMetaDataWrapper(s *sgClient) *MetaDataWrapper {
-	return &MetaDataWrapper{Option: &s.option}
+func NewMetaDataWrapper() *MetaDataWrapper {
+	return &MetaDataWrapper{}
 }
 
-func (w *MetaDataWrapper) WrapCall(callFunc CallFunc) CallFunc {
+func (w *MetaDataWrapper) WrapCall(option *SGOption, callFunc CallFunc) CallFunc {
 	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error {
-		ctx = wrapContext(ctx, w.Option)
+		ctx = wrapContext(ctx, option)
 		return callFunc(ctx, ServiceMethod, arg, reply)
 	}
 }
 
-func (w *MetaDataWrapper) WrapGo(goFunc GoFunc) GoFunc {
+func (w *MetaDataWrapper) WrapGo(option *SGOption, goFunc GoFunc) GoFunc {
 	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) *Call {
-		ctx = wrapContext(ctx, w.Option)
+		ctx = wrapContext(ctx, option)
 
 		return goFunc(ctx, ServiceMethod, arg, reply, done)
 	}
@@ -65,18 +64,22 @@ func wrapContext(ctx context.Context, option *SGOption) context.Context {
 type LogWrapper struct {
 }
 
-func (*LogWrapper) WrapCall(callFunc CallFunc) CallFunc {
+func NewLogWrapper() Wrapper {
+	return &LogWrapper{}
+}
+
+func (*LogWrapper) WrapCall(option *SGOption, callFunc CallFunc) CallFunc {
 	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error {
-		log.Println("before calling")
+		log.Printf("before calling, ServiceMethod:%+v, arg:%+v", ServiceMethod, arg)
 		err := callFunc(ctx, ServiceMethod, arg, reply)
-		log.Println("after...")
+		log.Printf("after calling, ServiceMethod:%+v, reply:%+v, error: %s", ServiceMethod, reply, err)
 		return err
 	}
 }
 
-func (*LogWrapper) WrapGo(goFunc GoFunc) GoFunc {
+func (*LogWrapper) WrapGo(option *SGOption, goFunc GoFunc) GoFunc {
 	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) *Call {
-		log.Println("before calling")
+		log.Printf("before going, ServiceMethod:%+v, arg:%+v", ServiceMethod, arg)
 		return goFunc(ctx, ServiceMethod, arg, reply, done)
 	}
 }

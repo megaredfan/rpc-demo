@@ -31,22 +31,19 @@ type FailMode byte
 const (
 	FailFast FailMode = iota
 	FailOver
-	FailSafe
 	FailRetry
-	FailBack
-	Broadcast
-	Fork
+	FailSafe
 )
 
 type SGOption struct {
-	AppKey        string
-	RemoteAppkey  string
-	FailMode      FailMode
-	Retries       int
-	Registry      registry.Registry
-	Selector      selector.Selector
-	SelectOptions []selector.SelectOption
-	Wrappers      []Wrapper
+	AppKey       string
+	RemoteAppkey string
+	FailMode     FailMode
+	Retries      int
+	Registry     registry.Registry
+	Selector     selector.Selector
+	SelectOption selector.SelectOption
+	Wrappers     []Wrapper
 
 	Option
 
