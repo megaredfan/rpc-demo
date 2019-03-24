@@ -6,6 +6,7 @@ import (
 	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/selector"
 	"github.com/megaredfan/rpc-demo/transport"
+	"math"
 	"time"
 )
 
@@ -17,6 +18,10 @@ type Option struct {
 
 	DialTimeout    time.Duration
 	RequestTimeout time.Duration
+
+	Heartbeat                 bool
+	HeartbeatInterval         time.Duration
+	HeartbeatDegradeThreshold int
 }
 
 var DefaultOption = Option{
@@ -24,6 +29,10 @@ var DefaultOption = Option{
 	SerializeType: codec.MessagePack,
 	CompressType:  protocol.CompressTypeNone,
 	TransportType: transport.TCPTransport,
+
+	Heartbeat:                 false,
+	HeartbeatInterval:         0,
+	HeartbeatDegradeThreshold: math.MaxInt32,
 }
 
 type FailMode byte
@@ -46,8 +55,10 @@ type SGOption struct {
 	Wrappers     []Wrapper
 
 	Option
-
-	Meta map[string]string
+	Auth                    string
+	CircuitBreakerThreshold uint64
+	CircuitBreakerWindow    time.Duration
+	Meta                    map[string]string
 }
 
 func AddWrapper(o *SGOption, w ...Wrapper) *SGOption {

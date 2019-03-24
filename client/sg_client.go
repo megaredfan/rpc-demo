@@ -2,22 +2,32 @@ package client
 
 import (
 	"context"
+	"errors"
+	"github.com/megaredfan/rpc-demo/protocol"
 	"github.com/megaredfan/rpc-demo/registry"
+	"github.com/megaredfan/rpc-demo/selector"
 	"log"
 	"sync"
+	"time"
 )
 
 type SGClient interface {
 	Go(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) (*Call, error)
 	Call(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error
+	Close() error
 }
 
 type sgClient struct {
-	shutdown  bool
-	option    SGOption
-	clients   sync.Map //map[string]RPCClient
+	shutdown             bool
+	option               SGOption
+	clients              sync.Map //map[string]RPCClient
+	clientsHeartbeatFail map[string]int
+	breakers             sync.Map //map[string]CircuitBreaker
+	watcher              registry.Watcher
+
 	serversMu sync.RWMutex
 	servers   []registry.Provider
+	mu        sync.Mutex
 }
 
 func (c *sgClient) Go(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) (*Call, error) {
@@ -58,11 +68,17 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			if rpcClient != nil {
 				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
 				if err == nil {
+					if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+						breaker.(CircuitBreaker).Success()
+					}
 					return err
 				}
 
 				if err != nil {
 					if _, ok := err.(ServiceError); ok {
+						if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+							breaker.(CircuitBreaker).Fail(err)
+						}
 						return err
 					}
 				}
@@ -75,6 +91,16 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 		if err == nil {
 			err = connectErr
 		}
+
+		if err == nil {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Success()
+			}
+		} else {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Fail(err)
+			}
+		}
 		return err
 	case FailOver:
 		retries := c.option.Retries
@@ -84,11 +110,17 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 			if rpcClient != nil {
 				err = c.wrapCall(rpcClient.Call)(ctx, ServiceMethod, arg, reply)
 				if err == nil {
+					if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+						breaker.(CircuitBreaker).Success()
+					}
 					return err
 				}
 
 				if err != nil {
 					if _, ok := err.(ServiceError); ok {
+						if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+							breaker.(CircuitBreaker).Fail(err)
+						}
 						return err
 					}
 				}
@@ -99,6 +131,15 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 		}
 		if err == nil {
 			err = connectErr
+		}
+		if err == nil {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Success()
+			}
+		} else {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Fail(err)
+			}
 		}
 		return err
 
@@ -113,8 +154,39 @@ func (c *sgClient) Call(ctx context.Context, ServiceMethod string, arg interface
 		if c.option.FailMode == FailSafe {
 			err = nil
 		}
+
+		if err == nil {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Success()
+			}
+		} else {
+			if breaker, ok := c.breakers.Load(provider.ProviderKey); ok {
+				breaker.(CircuitBreaker).Fail(err)
+			}
+		}
+
 		return err
 	}
+}
+
+func (c *sgClient) Close() error {
+	c.shutdown = true
+
+	c.mu.Lock()
+	c.clients.Range(func(k, v interface{}) bool {
+		if client, ok := v.(simpleClient); ok {
+			c.removeClient(k.(string), &client)
+		}
+		return true
+	})
+	c.mu.Unlock()
+
+	go func() {
+		c.option.Registry.Unwatch(c.watcher)
+		c.watcher.Close()
+	}()
+
+	return nil
 }
 
 func (c *sgClient) wrapCall(callFunc CallFunc) CallFunc {
@@ -142,16 +214,22 @@ func (c *sgClient) selectClient(ctx context.Context, ServiceMethod string, arg i
 	return
 }
 
+var ErrBreakerOpen = errors.New("breaker open")
+
 func (c *sgClient) getClient(provider registry.Provider) (client RPCClient, err error) {
 	key := provider.ProviderKey
+	breaker, ok := c.breakers.Load(key)
+	if ok && !breaker.(CircuitBreaker).AllowRequest() {
+		return nil, ErrBreakerOpen
+	}
+
 	rc, ok := c.clients.Load(key)
 	if ok {
 		client = rc.(RPCClient)
 		if !client.IsShutDown() {
 			return
 		} else {
-			c.clients.Delete(key)
-			client.Close()
+			c.removeClient(key, client)
 		}
 	}
 
@@ -164,6 +242,10 @@ func (c *sgClient) getClient(provider registry.Provider) (client RPCClient, err 
 			return
 		}
 		c.clients.Store(key, client)
+
+		if c.option.CircuitBreakerThreshold > 0 && c.option.CircuitBreakerWindow > 0 {
+			c.breakers.Store(key, NewDefaultCircuitBreaker(c.option.CircuitBreakerThreshold, c.option.CircuitBreakerWindow))
+		}
 	}
 	return
 }
@@ -173,6 +255,7 @@ func (c *sgClient) removeClient(clientKey string, client RPCClient) {
 	if client != nil {
 		client.Close()
 	}
+	c.breakers.Delete(clientKey)
 }
 
 func (c *sgClient) providers() []registry.Provider {
@@ -187,13 +270,18 @@ func NewSGClient(option SGOption) SGClient {
 	AddWrapper(&s.option, NewMetaDataWrapper(), NewLogWrapper())
 
 	providers := s.option.Registry.GetServiceList()
-	watcher := s.option.Registry.Watch()
-	go s.watchService(watcher)
+	s.watcher = s.option.Registry.Watch()
+	go s.watchService(s.watcher)
 	s.serversMu.Lock()
 	defer s.serversMu.Unlock()
 	for _, p := range providers {
 		s.servers = append(s.servers, p)
 	}
+	if s.option.Heartbeat {
+		go s.heartbeat()
+		s.option.SelectOption.Filters = append(s.option.SelectOption.Filters, selector.DegradeProviderFilter)
+	}
+
 	return s
 }
 
@@ -208,47 +296,58 @@ func (c *sgClient) watchService(watcher registry.Watcher) {
 			break
 		}
 
-		if event.AppKey == c.option.AppKey {
-			switch event.Action {
-			case registry.Create:
-				c.serversMu.Lock()
-				for _, ep := range event.Providers {
-					exists := false
-					for _, p := range c.servers {
-						if p.ProviderKey == ep.ProviderKey {
-							exists = true
-						}
-					}
-					if !exists {
-						c.servers = append(c.servers, ep)
-					}
-				}
+		c.serversMu.Lock()
+		c.servers = event.Providers
+		c.serversMu.Unlock()
+	}
+}
 
-				c.serversMu.Unlock()
-			case registry.Update:
+func (c *sgClient) heartbeat() {
+	if c.option.HeartbeatInterval <= 0 {
+		return
+	}
+	//根据指定的时间间隔发送心跳
+	t := time.NewTicker(c.option.HeartbeatInterval)
+	for range t.C {
+		if c.shutdown {
+			t.Stop()
+			return
+		}
+		//遍历每个RPCClient进行心跳检查
+		c.clients.Range(func(k, v interface{}) bool {
+			err := v.(RPCClient).Call(context.Background(), "", "", nil)
+			c.mu.Lock()
+			if err != nil {
+				//心跳失败进行计数
+				if fail, ok := c.clientsHeartbeatFail[k.(string)]; ok {
+					fail++
+					c.clientsHeartbeatFail[k.(string)] = fail
+				} else {
+					c.clientsHeartbeatFail[k.(string)] = 1
+				}
+			} else {
+				//心跳成功则进行恢复
+				c.clientsHeartbeatFail[k.(string)] = 0
 				c.serversMu.Lock()
-				for _, ep := range event.Providers {
-					for i := range c.servers {
-						if c.servers[i].ProviderKey == ep.ProviderKey {
-							c.servers[i] = ep
-						}
+				for i, p := range c.servers {
+					if p.ProviderKey == k {
+						delete(c.servers[i].Meta, protocol.ProviderDegradeKey)
 					}
 				}
-				c.serversMu.Unlock()
-			case registry.Delete:
-				c.serversMu.Lock()
-				var newList []registry.Provider
-				for _, p := range c.servers {
-					for _, ep := range event.Providers {
-						if p.ProviderKey != ep.ProviderKey {
-							newList = append(newList, p)
-						}
-					}
-				}
-				c.servers = newList
 				c.serversMu.Unlock()
 			}
-		}
-
+			c.mu.Unlock()
+			//心跳失败次数超过阈值则进行降级
+			if c.clientsHeartbeatFail[k.(string)] > c.option.HeartbeatDegradeThreshold {
+				c.serversMu.Lock()
+				for i, p := range c.servers {
+					if p.ProviderKey == k {
+						c.servers[i].Meta[protocol.ProviderDegradeKey] = true
+					}
+				}
+				c.serversMu.Unlock()
+			}
+			return true
+		})
 	}
 }

@@ -26,7 +26,6 @@ const (
 )
 
 type Event struct {
-	Action    EventAction
 	AppKey    string
 	Providers []Provider
 }
@@ -35,7 +34,7 @@ type Provider struct {
 	ProviderKey string // Network+"@"+Addr
 	Network     string
 	Addr        string
-	Meta        map[string]string
+	Meta        map[string]interface{}
 }
 
 type Peer2PeerDiscovery struct {

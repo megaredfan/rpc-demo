@@ -5,7 +5,7 @@ import (
 	"github.com/megaredfan/rpc-demo/client"
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/megaredfan/rpc-demo/registry"
-	"github.com/megaredfan/rpc-demo/registry/memory"
+	"github.com/megaredfan/rpc-demo/registry/zookeeper"
 	"github.com/megaredfan/rpc-demo/server"
 	"github.com/megaredfan/rpc-demo/service"
 	"log"
@@ -20,14 +20,14 @@ var s server.RPCServer
 
 func main() {
 	StartServer()
-	time.Sleep(1e9)
-	start := time.Now()
-	for i := 0; i < callTimes; i++ {
-		MakeCall(codec.GOB)
-		//MakeCall(codec.MessagePack)
-	}
-	cost := time.Now().Sub(start)
-	log.Printf("cost:%s", cost)
+	time.Sleep(1e15)
+	//start := time.Now()
+	//for i := 0; i < callTimes; i++ {
+	//	MakeCall(codec.GOB)
+	//	//MakeCall(codec.MessagePack)
+	//}
+	//cost := time.Now().Sub(start)
+	//log.Printf("cost:%s", cost)
 	StopServer()
 }
 
@@ -35,7 +35,8 @@ func StopServer() {
 	s.Close()
 }
 
-var Registry = memory.NewInMemoryRegistry()
+var Registry = zookeeper.NewZookeeperRegistry("my-app", "/mns/sankuai/service",
+	[]string{"127.0.0.1:2181"}, 1e10, nil)
 
 func StartServer() {
 	go func() {

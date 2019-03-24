@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"github.com/megaredfan/rpc-demo/protocol"
 	"github.com/megaredfan/rpc-demo/registry"
 	"github.com/megaredfan/rpc-demo/transport"
@@ -31,12 +30,11 @@ func (w *DefaultServerWrapper) WrapServe(s *SGServer, serveFunc ServeFunc) Serve
 			}
 		}(s)
 
-		serviceInfo, _ := json.Marshal(s.Services())
 		provider := registry.Provider{
 			ProviderKey: network + "@" + addr,
 			Network:     network,
 			Addr:        addr,
-			Meta:        map[string]string{"services": string(serviceInfo)},
+			Meta:        map[string]interface{}{"services": s.Services()},
 		}
 		r := s.Option.Registry
 		rOpt := s.Option.RegisterOption
@@ -58,4 +56,55 @@ func (w *DefaultServerWrapper) WrapHandleRequest(s *SGServer, requestFunc Handle
 		requestFunc(ctx, request, response, tr)
 		atomic.AddInt64(&s.requestInProcess, -1)
 	}
+}
+
+func (w *DefaultServerWrapper) WrapClose(s *SGServer, closeFunc CloseFunc) CloseFunc {
+	return func() error {
+		provider := registry.Provider{
+			ProviderKey: s.network + "@" + s.addr,
+			Network:     s.network,
+			Addr:        s.addr,
+		}
+		r := s.Option.Registry
+		rOpt := s.Option.RegisterOption
+
+		r.Unregister(rOpt, provider)
+		log.Printf("unregistered provider %v for app %s", provider, rOpt)
+
+		return closeFunc()
+	}
+}
+
+type ServerAuthInterceptor struct {
+	authFunc AuthFunc
+}
+
+func NewAuthInterceptor(authFunc AuthFunc) Wrapper {
+	return &ServerAuthInterceptor{authFunc}
+}
+
+func (*ServerAuthInterceptor) WrapServe(s *SGServer, serveFunc ServeFunc) ServeFunc {
+	return serveFunc
+}
+
+func (*ServerAuthInterceptor) WrapServeTransport(s *SGServer, transportFunc ServeTransportFunc) ServeTransportFunc {
+	return transportFunc
+}
+
+func (sai *ServerAuthInterceptor) WrapHandleRequest(s *SGServer, requestFunc HandleRequestFunc) HandleRequestFunc {
+	return func(ctx context.Context, request *protocol.Message, response *protocol.Message, tr transport.Transport) {
+		if auth, ok := ctx.Value(protocol.AuthKey).(string); ok {
+			//鉴权通过则执行业务逻辑
+			if sai.authFunc(auth) {
+				requestFunc(ctx, response, response, tr)
+				return
+			}
+		}
+		//鉴权失败则返回异常
+		s.writeErrorResponse(response, tr, "auth failed")
+	}
+}
+
+func (*ServerAuthInterceptor) WrapClose(s *SGServer, closeFunc CloseFunc) CloseFunc {
+	return closeFunc
 }

@@ -21,7 +21,7 @@ type Registry struct {
 func (r *Registry) Register(option registry.RegisterOption, providers ...registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	go r.sendWatcherEvent(registry.Create, option.AppKey, providers...)
+	go r.sendWatcherEvent(option.AppKey, providers...)
 
 	var providers2Register []registry.Provider
 	for _, p := range providers {
@@ -43,7 +43,7 @@ func (r *Registry) Register(option registry.RegisterOption, providers ...registr
 func (r *Registry) Unregister(option registry.RegisterOption, providers ...registry.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	go r.sendWatcherEvent(registry.Delete, option.AppKey, providers...)
+	go r.sendWatcherEvent(option.AppKey, providers...)
 
 	var newList []registry.Provider
 	for _, p := range r.providers {
@@ -105,10 +105,9 @@ func (r *Registry) Unwatch(watcher registry.Watcher) {
 	}
 }
 
-func (r *Registry) sendWatcherEvent(action registry.EventAction, AppKey string, providers ...registry.Provider) {
+func (r *Registry) sendWatcherEvent(AppKey string, providers ...registry.Provider) {
 	var watchers []*Watcher
 	event := &registry.Event{
-		Action:    action,
 		AppKey:    AppKey,
 		Providers: providers,
 	}

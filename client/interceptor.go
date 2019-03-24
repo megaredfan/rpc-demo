@@ -53,6 +53,14 @@ func wrapContext(ctx context.Context, option *SGOption) context.Context {
 	}
 	metaData[protocol.RequestTimeoutKey] = uint64(timeout)
 
+	if option.Auth != "" {
+		metaData[protocol.AuthKey] = option.Auth
+	}
+
+	if auth, ok := ctx.Value(protocol.AuthKey).(string); ok {
+		metaData[protocol.AuthKey] = auth
+	}
+
 	deadline, ok = ctx.Deadline()
 	if ok {
 		metaData[protocol.RequestDeadlineKey] = deadline.Unix()

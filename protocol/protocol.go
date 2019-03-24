@@ -21,6 +21,7 @@ type MessageType byte
 const (
 	MessageTypeRequest MessageType = iota
 	MessageTypeResponse
+	MessageTypeHeartbeat
 )
 
 type CompressType byte
@@ -57,6 +58,8 @@ const (
 	RequestTimeoutKey  = "rpc_request_timeout"
 	RequestDeadlineKey = "rpc_request_deadline"
 	MetaDataKey        = "rpc_meta_data"
+	AuthKey            = "rpc_auth"
+	ProviderDegradeKey = "provider_degrade"
 )
 
 type Header struct {

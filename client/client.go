@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var ErrorShutdown = errors.New("client is shut down")
@@ -20,6 +21,7 @@ type RPCClient interface {
 	Call(ctx context.Context, serviceMethod string, arg interface{}, reply interface{}) error
 	Close() error
 	IsShutDown() bool
+	IsDegrade() bool
 }
 
 type Call struct {
@@ -31,23 +33,32 @@ type Call struct {
 }
 
 type simpleClient struct {
-	codec        codec.Codec
-	rwc          io.ReadWriteCloser
-	pendingCalls sync.Map
-	mutex        sync.Mutex
-	shutdown     bool
-	option       Option
-	seq          uint64
+	codec           codec.Codec
+	rwc             io.ReadWriteCloser
+	network         string
+	addr            string
+	pendingCalls    sync.Map
+	mutex           sync.Mutex
+	degraded        bool
+	shutdown        bool
+	option          Option
+	seq             uint64
+	heatbeatFailNum int
 }
 
 func (c *simpleClient) IsShutDown() bool {
 	return c.shutdown
 }
 
+func (c *simpleClient) IsDegrade() bool {
+	return c.degraded
+}
+
 func NewRPCClient(network string, addr string, option Option) (RPCClient, error) {
 	client := new(simpleClient)
 	client.option = option
-
+	client.network = network
+	client.addr = addr
 	client.codec = codec.GetCodec(option.SerializeType)
 
 	tr := transport.NewTransport(option.TransportType)
@@ -59,6 +70,10 @@ func NewRPCClient(network string, addr string, option Option) (RPCClient, error)
 	client.rwc = tr
 
 	go client.input()
+
+	if client.option.Heartbeat && client.option.HeartbeatInterval > 0 {
+		go client.heartbeat()
+	}
 	//log.Printf("connected to %s@%s", network, addr)
 	return client, nil
 }
@@ -140,10 +155,14 @@ func (c *simpleClient) send(ctx context.Context, call *Call) {
 
 	request := protocol.NewMessage(c.option.ProtocolType)
 	request.Seq = seq
-	request.MessageType = protocol.MessageTypeRequest
-	serviceMethod := strings.SplitN(call.ServiceMethod, ".", 2)
-	request.ServiceName = serviceMethod[0]
-	request.MethodName = serviceMethod[1]
+	if call.ServiceMethod != "" {
+		request.MessageType = protocol.MessageTypeRequest
+		serviceMethod := strings.SplitN(call.ServiceMethod, ".", 2)
+		request.ServiceName = serviceMethod[0]
+		request.MethodName = serviceMethod[1]
+	} else {
+		request.MessageType = protocol.MessageTypeHeartbeat
+	}
 	request.SerializeType = c.option.SerializeType
 	request.CompressType = c.option.CompressType
 	if ctx.Value(protocol.MetaDataKey) != nil {
@@ -210,4 +229,29 @@ func (c *simpleClient) input() {
 	}
 	log.Println("input error, closing client, error: " + err.Error())
 	c.Close()
+}
+
+func (c *simpleClient) heartbeat() {
+	t := time.NewTicker(c.option.HeartbeatInterval)
+
+	for range t.C {
+		if c.shutdown {
+			t.Stop()
+			return
+		}
+
+		err := c.Call(context.Background(), "", "", nil)
+		if err != nil {
+			log.Printf("failed to heartbeat to %s@%s", c.network, c.addr)
+			c.mutex.Lock()
+			c.heatbeatFailNum++
+			c.mutex.Unlock()
+		}
+
+		if c.heatbeatFailNum > c.option.HeartbeatDegradeThreshold {
+			c.mutex.Lock()
+			c.degraded = true
+			c.mutex.Unlock()
+		}
+	}
 }
