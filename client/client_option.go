@@ -22,6 +22,9 @@ type Option struct {
 	Heartbeat                 bool
 	HeartbeatInterval         time.Duration
 	HeartbeatDegradeThreshold int
+
+	Tagged bool
+	Tags   map[string]string
 }
 
 var DefaultOption = Option{
@@ -33,6 +36,7 @@ var DefaultOption = Option{
 	Heartbeat:                 false,
 	HeartbeatInterval:         0,
 	HeartbeatDegradeThreshold: math.MaxInt32,
+	Tagged:                    false,
 }
 
 type FailMode byte

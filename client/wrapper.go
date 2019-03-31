@@ -9,3 +9,14 @@ type Wrapper interface {
 	WrapCall(option *SGOption, callFunc CallFunc) CallFunc
 	WrapGo(option *SGOption, goFunc GoFunc) GoFunc
 }
+
+type defaultClientInterceptor struct {
+}
+
+func (defaultClientInterceptor) WrapCall(option *SGOption, callFunc CallFunc) CallFunc {
+	return callFunc
+}
+
+func (defaultClientInterceptor) WrapGo(option *SGOption, goFunc GoFunc) GoFunc {
+	return goFunc
+}

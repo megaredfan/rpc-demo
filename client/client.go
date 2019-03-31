@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/megaredfan/rpc-demo/protocol"
+	"github.com/megaredfan/rpc-demo/share/metadata"
 	"github.com/megaredfan/rpc-demo/transport"
 	"io"
 	"log"
@@ -74,7 +75,7 @@ func NewRPCClient(network string, addr string, option Option) (RPCClient, error)
 	if client.option.Heartbeat && client.option.HeartbeatInterval > 0 {
 		go client.heartbeat()
 	}
-	//log.Printf("connected to %s@%s", network, addr)
+	log.Printf("connected to %s@%s", network, addr)
 	return client, nil
 }
 
@@ -105,20 +106,6 @@ func (c *simpleClient) Go(ctx context.Context, serviceMethod string, args interf
 func (c *simpleClient) Call(ctx context.Context, serviceMethod string, args interface{}, reply interface{}) error {
 	seq := atomic.AddUint64(&c.seq, 1)
 	ctx = context.WithValue(ctx, protocol.RequestSeqKey, seq)
-
-	//canFn := func() {}
-	//if c.option.RequestTimeout != time.Duration(0) {
-	//	ctx, canFn = context.WithTimeout(ctx, c.option.RequestTimeout)
-	//	metaDataInterface := ctx.Value(protocol.MetaDataKey)
-	//	var metaData map[string]string
-	//	if metaDataInterface == nil {
-	//		metaData = make(map[string]string)
-	//	} else {
-	//		metaData = metaDataInterface.(map[string]string)
-	//	}
-	//	metaData[protocol.RequestTimeoutKey] = c.option.RequestTimeout.String()
-	//	ctx = context.WithValue(ctx, protocol.MetaDataKey, metaData)
-	//}
 
 	done := make(chan *Call, 1)
 	call := c.Go(ctx, serviceMethod, args, reply, done)
@@ -165,8 +152,8 @@ func (c *simpleClient) send(ctx context.Context, call *Call) {
 	}
 	request.SerializeType = c.option.SerializeType
 	request.CompressType = c.option.CompressType
-	if ctx.Value(protocol.MetaDataKey) != nil {
-		request.MetaData = ctx.Value(protocol.MetaDataKey).(map[string]interface{})
+	if meta := metadata.FromContext(ctx); meta != nil {
+		request.MetaData = meta
 	}
 
 	requestData, err := c.codec.Encode(call.Args)
@@ -208,10 +195,12 @@ func (c *simpleClient) input() {
 		}
 
 		call := callInterface.(*Call)
-		have := response.ServiceName + "." + response.MethodName
-		want := call.ServiceMethod
-		if have != want {
-			log.Fatalf("servicemethod not equal! have:%s, want:%s", have, want)
+		if response.MessageType != protocol.MessageTypeHeartbeat {
+			have := response.ServiceName + "." + response.MethodName
+			want := call.ServiceMethod
+			if have != want {
+				log.Fatalf("servicemethod not equal! have:%s, want:%s", have, want)
+			}
 		}
 		c.pendingCalls.Delete(seq)
 
@@ -240,7 +229,7 @@ func (c *simpleClient) heartbeat() {
 			return
 		}
 
-		err := c.Call(context.Background(), "", "", nil)
+		err := c.Call(context.Background(), "", nil, nil)
 		if err != nil {
 			log.Printf("failed to heartbeat to %s@%s", c.network, c.addr)
 			c.mutex.Lock()

@@ -6,6 +6,7 @@ import (
 	"github.com/megaredfan/rpc-demo/codec"
 	"github.com/megaredfan/rpc-demo/protocol"
 	"github.com/megaredfan/rpc-demo/registry"
+	"github.com/megaredfan/rpc-demo/share/metadata"
 	"github.com/megaredfan/rpc-demo/transport"
 	"io"
 	"log"
@@ -18,8 +19,8 @@ import (
 )
 
 type RPCServer interface {
-	Register(rcvr interface{}, metaData map[string]string) error
-	Serve(network string, addr string) error
+	Register(rcvr interface{}) error
+	Serve(network string, addr string, metaData map[string]interface{}) error
 	Services() []ServiceInfo
 	Close() error
 }
@@ -81,7 +82,10 @@ type service struct {
 func NewRPCServer(option Option) RPCServer {
 	s := new(SGServer)
 	s.Option = option
-	s.Option.Wrappers = append(s.Option.Wrappers, &DefaultServerWrapper{})
+	s.Option.Wrappers = append(s.Option.Wrappers,
+		&DefaultServerWrapper{},
+		&OpenTracingInterceptor{},
+	)
 	s.AddShutdownHook(func(s *SGServer) {
 		provider := registry.Provider{
 			ProviderKey: s.network + "@" + s.addr,
@@ -95,7 +99,7 @@ func NewRPCServer(option Option) RPCServer {
 	return s
 }
 
-func (s *SGServer) Register(rcvr interface{}, metaData map[string]string) error {
+func (s *SGServer) Register(rcvr interface{}) error {
 	typ := reflect.TypeOf(rcvr)
 	name := typ.Name()
 	srv := new(service)
@@ -220,11 +224,11 @@ func isExported(name string) bool {
 	return unicode.IsUpper(r)
 }
 
-func (s *SGServer) Serve(network string, addr string) error {
+func (s *SGServer) Serve(network string, addr string, metaData map[string]interface{}) error {
 	s.network = network
 	s.addr = addr
 	serveFunc := s.serve
-	return s.wrapServe(serveFunc)(network, addr)
+	return s.wrapServe(serveFunc)(network, addr, metaData)
 }
 
 func (s *SGServer) wrapServe(serveFunc ServeFunc) ServeFunc {
@@ -234,7 +238,7 @@ func (s *SGServer) wrapServe(serveFunc ServeFunc) ServeFunc {
 	return serveFunc
 }
 
-func (s *SGServer) serve(network string, addr string) error {
+func (s *SGServer) serve(network string, addr string, meta map[string]interface{}) error {
 	if s.shutdown {
 		return nil
 	}
@@ -338,7 +342,7 @@ func (s *SGServer) serveTransport(tr transport.Transport) {
 		response.MessageType = protocol.MessageTypeResponse
 
 		deadline, ok := response.Deadline()
-		ctx := context.Background()
+		ctx := metadata.WithMeta(context.Background(), response.MetaData)
 
 		if ok {
 			ctx, _ = context.WithDeadline(ctx, deadline)
@@ -358,7 +362,9 @@ func (s *SGServer) wrapHandleRequest(handleFunc HandleRequestFunc) HandleRequest
 
 func (s *SGServer) doHandleRequest(ctx context.Context, request *protocol.Message, response *protocol.Message, tr transport.Transport) {
 	if request.MessageType == protocol.MessageTypeHeartbeat {
+		response.MessageType = protocol.MessageTypeHeartbeat
 		tr.Write(protocol.EncodeMessage(s.Option.ProtocolType, response))
+		return
 	}
 	sname := request.ServiceName
 	mname := request.MethodName

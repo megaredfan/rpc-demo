@@ -21,9 +21,36 @@ type SelectOption struct {
 	Filters []Filter
 }
 
-func DegradeProviderFilter(provider registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}) bool {
-	_, degrade := provider.Meta[protocol.ProviderDegradeKey]
-	return degrade
+func DegradeProviderFilter() Filter {
+	return func(provider registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}) bool {
+		_, degrade := provider.Meta[protocol.ProviderDegradeKey]
+		return !degrade
+	}
+}
+
+func TaggedProviderFilter(tags map[string]string) Filter {
+	return func(provider registry.Provider, ctx context.Context, ServiceMethod string, arg interface{}) bool {
+		if tags == nil {
+			return true
+		}
+		if provider.Meta == nil {
+			return false
+		}
+		providerTags, ok := provider.Meta["tags"].(map[string]string)
+		if !ok || len(providerTags) <= 0 {
+			return false
+		}
+		for k, v := range tags {
+			if tag, ok := providerTags[k]; ok {
+				if tag != v {
+					return false
+				}
+			} else {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 type Selector interface {

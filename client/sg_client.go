@@ -267,7 +267,7 @@ func (c *sgClient) providers() []registry.Provider {
 func NewSGClient(option SGOption) SGClient {
 	s := new(sgClient)
 	s.option = option
-	AddWrapper(&s.option, NewMetaDataWrapper(), NewLogWrapper())
+	AddWrapper(&s.option, &MetaDataWrapper{}, &LogWrapper{}, &OpenTracingInterceptor{})
 
 	providers := s.option.Registry.GetServiceList()
 	s.watcher = s.option.Registry.Watch()
@@ -279,7 +279,13 @@ func NewSGClient(option SGOption) SGClient {
 	}
 	if s.option.Heartbeat {
 		go s.heartbeat()
-		s.option.SelectOption.Filters = append(s.option.SelectOption.Filters, selector.DegradeProviderFilter)
+		s.option.SelectOption.Filters = append(s.option.SelectOption.Filters,
+			selector.DegradeProviderFilter())
+	}
+
+	if s.option.Tagged && s.option.Tags != nil {
+		s.option.SelectOption.Filters = append(s.option.SelectOption.Filters,
+			selector.TaggedProviderFilter(s.option.Tags))
 	}
 
 	return s
@@ -303,6 +309,11 @@ func (c *sgClient) watchService(watcher registry.Watcher) {
 }
 
 func (c *sgClient) heartbeat() {
+	c.mu.Lock()
+	if c.clientsHeartbeatFail == nil {
+		c.clientsHeartbeatFail = make(map[string]int)
+	}
+	c.mu.Unlock()
 	if c.option.HeartbeatInterval <= 0 {
 		return
 	}

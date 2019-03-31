@@ -3,15 +3,12 @@ package client
 import (
 	"context"
 	"github.com/megaredfan/rpc-demo/protocol"
-	"log"
+	"github.com/megaredfan/rpc-demo/share/metadata"
 	"time"
 )
 
 type MetaDataWrapper struct {
-}
-
-func NewMetaDataWrapper() *MetaDataWrapper {
-	return &MetaDataWrapper{}
+	defaultClientInterceptor
 }
 
 func (w *MetaDataWrapper) WrapCall(option *SGOption, callFunc CallFunc) CallFunc {
@@ -44,13 +41,7 @@ func wrapContext(ctx context.Context, option *SGOption) context.Context {
 
 	ctx, _ = context.WithTimeout(ctx, timeout)
 
-	metaDataInterface := ctx.Value(protocol.MetaDataKey)
-	var metaData map[string]interface{}
-	if metaDataInterface == nil {
-		metaData = make(map[string]interface{})
-	} else {
-		metaData = metaDataInterface.(map[string]interface{})
-	}
+	metaData := metadata.FromContext(ctx)
 	metaData[protocol.RequestTimeoutKey] = uint64(timeout)
 
 	if option.Auth != "" {
@@ -65,29 +56,6 @@ func wrapContext(ctx context.Context, option *SGOption) context.Context {
 	if ok {
 		metaData[protocol.RequestDeadlineKey] = deadline.Unix()
 	}
-	ctx = context.WithValue(ctx, protocol.MetaDataKey, metaData)
+	ctx = metadata.WithMeta(ctx, metaData)
 	return ctx
-}
-
-type LogWrapper struct {
-}
-
-func NewLogWrapper() Wrapper {
-	return &LogWrapper{}
-}
-
-func (*LogWrapper) WrapCall(option *SGOption, callFunc CallFunc) CallFunc {
-	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}) error {
-		log.Printf("before calling, ServiceMethod:%+v, arg:%+v", ServiceMethod, arg)
-		err := callFunc(ctx, ServiceMethod, arg, reply)
-		log.Printf("after calling, ServiceMethod:%+v, reply:%+v, error: %s", ServiceMethod, reply, err)
-		return err
-	}
-}
-
-func (*LogWrapper) WrapGo(option *SGOption, goFunc GoFunc) GoFunc {
-	return func(ctx context.Context, ServiceMethod string, arg interface{}, reply interface{}, done chan *Call) *Call {
-		log.Printf("before going, ServiceMethod:%+v, arg:%+v", ServiceMethod, arg)
-		return goFunc(ctx, ServiceMethod, arg, reply, done)
-	}
 }

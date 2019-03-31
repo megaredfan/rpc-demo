@@ -15,6 +15,7 @@ type Option struct {
 	Wrappers       []Wrapper
 	ShutDownWait   time.Duration
 	ShutDownHooks  []ShutDownHook
+	Tags           map[string]string
 
 	ProtocolType  protocol.ProtocolType
 	SerializeType codec.SerializeType
