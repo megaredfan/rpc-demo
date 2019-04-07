@@ -50,7 +50,7 @@ func (w *DefaultServerWrapper) WrapServe(s *SGServer, serveFunc ServeFunc) Serve
 
 		r.Register(rOpt, provider)
 		log.Printf("registered provider %v for app %s", provider, rOpt)
-
+		s.startGateway()
 		return serveFunc(network, addr, meta)
 	}
 }

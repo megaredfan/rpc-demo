@@ -1,22 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"github.com/megaredfan/rpc-demo/client"
 	"github.com/megaredfan/rpc-demo/codec"
+	"github.com/megaredfan/rpc-demo/protocol"
 	"github.com/megaredfan/rpc-demo/registry/memory"
 	"github.com/megaredfan/rpc-demo/server"
 	"github.com/megaredfan/rpc-demo/service"
-	"github.com/megaredfan/rpc-demo/share/ratelimit"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/mocktracer"
+	"github.com/vmihailenco/msgpack"
+	"io/ioutil"
 	"log"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"time"
 )
 
-const callTimes = 1
+const callTimes = 11
 
 var s1, s2, s3 server.RPCServer
 
@@ -38,7 +44,48 @@ func main() {
 	cost = time.Now().Sub(start)
 	log.Printf("cost:%s", cost)
 
+	for i := 0; i < callTimes; i++ {
+		MakeHttpCall()
+	}
+
 	StopServer()
+}
+
+func MakeHttpCall() {
+	arg := service.Args{A: rand.Intn(200), B: rand.Intn(100)}
+	data, _ := msgpack.Marshal(arg)
+	body := bytes.NewBuffer(data)
+	req, err := http.NewRequest("POST", "http://localhost:5080/invoke", body)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	req.Header.Set(server.HEADER_SEQ, "1")
+	req.Header.Set(server.HEADER_MESSAGE_TYPE, protocol.MessageTypeRequest.String())
+	req.Header.Set(server.HEADER_COMPRESS_TYPE, protocol.CompressTypeNone.String())
+	req.Header.Set(server.HEADER_SERIALIZE_TYPE, codec.MessagePack.String())
+	req.Header.Set(server.HEADER_STATUS_CODE, protocol.StatusOK.String())
+	req.Header.Set(server.HEADER_SERVICE_NAME, "Arith")
+	req.Header.Set(server.HEADER_METHOD_NAME, "Add")
+	req.Header.Set(server.HEADER_ERROR, "")
+	meta := map[string]interface{}{"key": "value"}
+	metaJson, _ := json.Marshal(meta)
+	req.Header.Set(server.HEADER_META_DATA, string(metaJson))
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if response.StatusCode != 200 {
+		log.Println(response)
+	} else if response.Header.Get(server.HEADER_ERROR) != "" {
+		log.Println(response.Header.Get(server.HEADER_ERROR))
+	} else {
+		data, err = ioutil.ReadAll(response.Body)
+		result := service.Reply{}
+		msgpack.Unmarshal(data, &result)
+		fmt.Println(result.C)
+	}
 }
 
 func StopServer() {
@@ -110,7 +157,7 @@ func MakeCall(t codec.SerializeType) {
 	op.HeartbeatDegradeThreshold = 10
 	op.Tagged = true
 	op.Tags = map[string]string{"status": "alive"}
-	op.Wrappers = append(op.Wrappers, &client.RateLimitInterceptor{Limit: &ratelimit.DefaultRateLimiter{Num: 1}})
+	//op.Wrappers = append(op.Wrappers, &client.RateLimitInterceptor{Limit: &ratelimit.DefaultRateLimiter{Num: 1}})
 
 	//r := registry.NewPeer2PeerRegistry()
 	//r.Register(registry.RegisterOption{}, registry.Provider{ProviderKey: "tcp@:8880", Network: "tcp", Addr: ":8880"})

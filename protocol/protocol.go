@@ -15,6 +15,8 @@ import (
 //|magic|version|total length|header length|     header    |                    body              |
 //-------------------------------------------------------------------------------------------------
 
+var MAGIC = []byte{0xab, 0xba}
+
 type MessageType byte
 
 //请求类型
@@ -24,18 +26,84 @@ const (
 	MessageTypeHeartbeat
 )
 
+func ParseMessageType(name string) (MessageType, error) {
+	switch name {
+	case "request":
+		return MessageTypeRequest, nil
+	case "response":
+		return MessageTypeResponse, nil
+	case "heartbeat":
+		return MessageTypeHeartbeat, nil
+	default:
+		return MessageTypeRequest, errors.New("type " + name + " not found")
+	}
+}
+
+func (messageType MessageType) String() string {
+	switch messageType {
+	case MessageTypeRequest:
+		return "request"
+	case MessageTypeResponse:
+		return "response"
+	case MessageTypeHeartbeat:
+		return "heartbeat"
+	default:
+		return "unknown"
+	}
+}
+
 type CompressType byte
 
 const (
 	CompressTypeNone CompressType = iota
 )
 
+func ParseCompressType(name string) (CompressType, error) {
+	switch name {
+	case "none":
+		return CompressTypeNone, nil
+	default:
+		return CompressTypeNone, errors.New("type " + name + " not found")
+	}
+}
+
+func (compressType CompressType) String() string {
+	switch compressType {
+	case CompressTypeNone:
+		return "none"
+	default:
+		return "unknown"
+	}
+}
+
 type StatusCode byte
+
+func (code StatusCode) String() string {
+	switch code {
+	case StatusOK:
+		return "ok"
+	case StatusError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
 
 const (
 	StatusOK StatusCode = iota
 	StatusError
 )
+
+func ParseStatusCode(name string) (StatusCode, error) {
+	switch name {
+	case "ok":
+		return StatusOK, nil
+	case "error":
+		return StatusError, nil
+	default:
+		return StatusError, errors.New("type " + name + " not found")
+	}
+}
 
 type ProtocolType byte
 
@@ -132,7 +200,7 @@ func (RPCProtocol) DecodeMessage(r io.Reader) (msg *Message, err error) {
 	if err != nil {
 		return
 	}
-	if !checkMagic(first3bytes[:2]) {
+	if !CheckMagic(first3bytes[:2]) {
 		err = errors.New("wrong protocol")
 		return
 	}
@@ -182,8 +250,8 @@ func (RPCProtocol) EncodeMessage(msg *Message) []byte {
 	return data
 }
 
-func checkMagic(bytes []byte) bool {
-	return bytes[0] == 0xab && bytes[1] == 0xba
+func CheckMagic(bytes []byte) bool {
+	return bytes[0] == MAGIC[0] && bytes[1] == MAGIC[1]
 }
 
 func copyFullWithOffset(dst []byte, src []byte, start *int) {
